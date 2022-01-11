@@ -30,6 +30,7 @@ type Config struct {
 	Output *string
 }
 
+// nolint // as-is for now
 func (cfg *Config) validate() error {
 	if cfg.HS == nil || *cfg.HS == "" {
 		return errors.New("-hs is not set. You must specify homeserver URL")

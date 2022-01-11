@@ -1,10 +1,11 @@
 package main
 
 import (
+	"maunium.net/go/mautrix/id"
+
 	"gitlab.com/etke.cc/emm/export"
 	"gitlab.com/etke.cc/emm/flags"
 	"gitlab.com/etke.cc/emm/matrix"
-	"maunium.net/go/mautrix/id"
 )
 
 var cfg *flags.Config

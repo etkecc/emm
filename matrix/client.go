@@ -5,8 +5,10 @@ import (
 	"maunium.net/go/mautrix/id"
 )
 
-var client *mautrix.Client
-var room id.RoomID
+var (
+	client *mautrix.Client
+	room   id.RoomID
+)
 
 // Init matrix client
 func Init(hs string, login string, password string, roomID id.RoomID, alias id.RoomAlias) error {

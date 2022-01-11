@@ -26,12 +26,12 @@ func isMulti(output string) bool {
 func getOutputSingle(output string) (*os.File, error) {
 	var err error
 	if outputFileSingle == nil {
-		outputFileSingle, err = os.OpenFile(output, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+		outputFileSingle, err = os.OpenFile(output, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
 	}
 
 	return outputFileSingle, err
 }
 
 func getOutputMulti(output string) (*os.File, error) {
-	return os.OpenFile(output, os.O_WRONLY|os.O_CREATE, 0644)
+	return os.OpenFile(output, os.O_WRONLY|os.O_CREATE, 0o644)
 }
