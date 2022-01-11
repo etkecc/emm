@@ -1,0 +1,20 @@
+# github.com/btcsuite/btcutil v1.0.2
+## explicit; go 1.13
+github.com/btcsuite/btcutil/base58
+# golang.org/x/crypto v0.0.0-20211215153901-e495a2d5b3d3
+## explicit; go 1.17
+golang.org/x/crypto/hkdf
+golang.org/x/crypto/pbkdf2
+# golang.org/x/net v0.0.0-20211216030914-fe4d6282115f
+## explicit; go 1.17
+golang.org/x/net/html
+golang.org/x/net/html/atom
+# maunium.net/go/mautrix v0.10.9
+## explicit; go 1.14
+maunium.net/go/mautrix
+maunium.net/go/mautrix/crypto/attachment
+maunium.net/go/mautrix/crypto/utils
+maunium.net/go/mautrix/event
+maunium.net/go/mautrix/id
+maunium.net/go/mautrix/pushrules
+maunium.net/go/mautrix/pushrules/glob
