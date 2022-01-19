@@ -7,6 +7,7 @@ import (
 
 	"maunium.net/go/mautrix/id"
 
+	"gitlab.com/etke.cc/emm/matrix"
 )
 
 // DefaultTemplate text
