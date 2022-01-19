@@ -4,7 +4,7 @@ A CLI tool that joins the room and exports last N messages to the file you speci
 
 ## Features
 
-* Get messages from any matrix room
+* Get messages from any matrix room with pagination (if limit greather than page, to prevent timeout errors) or without it (if limit less or equals page)
 * Export messages to one file for all messages
 * Export each message in separate file
 * Custom templates supported (`contrib` contains an example of hugo post template, [etke.cc/webite](https://gitlab.com/etke.cc/website) can be used as reference)

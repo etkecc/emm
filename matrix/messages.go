@@ -1,12 +1,16 @@
 package matrix
 
 import (
+	"log"
 	"time"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
+
+// Page is a amount of messages per page
+const Page = 100
 
 // Message struct
 type Message struct {
@@ -26,30 +30,28 @@ type Message struct {
 	CreatedAtFull time.Time
 }
 
-var msgmap map[id.EventID]*Message
+var (
+	msgmap map[id.EventID]*Message
+	filter = &mautrix.FilterPart{
+		Types:    []event.Type{event.EventMessage},
+		NotTypes: []event.Type{event.EventReaction, event.StateMember},
+	}
+)
 
 // Messages of the room
 // Note on limit - the output slice may be less size than limit you sent in the following cases:
 // * room contains less messages than limit
 // * some room messages don't contain body/formatted body
 func Messages(limit int) ([]*Message, error) {
+	var err error
 	msgmap = make(map[id.EventID]*Message)
-	filter := &mautrix.FilterPart{
-		Types:    []event.Type{event.EventMessage},
-		NotTypes: []event.Type{event.EventReaction, event.StateMember},
+	if limit > Page {
+		err = paginate(limit)
+	} else {
+		err = load()
 	}
-
-	chunks, err := client.Messages(room, "", "", 'b', filter, limit)
 	if err != nil {
 		return nil, err
-	}
-
-	for _, chunk := range chunks.Chunk {
-		message := parseMessage(chunk)
-		if message == nil {
-			continue
-		}
-		msgmap[message.ID] = message
 	}
 
 	removeReplaced()
@@ -58,8 +60,58 @@ func Messages(limit int) ([]*Message, error) {
 	for _, message := range msgmap {
 		messages = append(messages, message)
 	}
+	log.Println("loaded", len(messages), "messages total")
 
 	return messages, nil
+}
+
+func paginate(limit int) error {
+	var token string
+	page := 1
+	for i := Page; i < limit; {
+		log.Println("requesting messages from", room, "page =", page)
+		chunks, err := client.Messages(room, token, "", 'b', filter, Page)
+		if err != nil {
+			return err
+		}
+		if len(chunks.Chunk) == 0 {
+			log.Println("no more messages")
+			break
+		}
+
+		processEvents(chunks)
+		token = chunks.End
+		if len(chunks.Chunk) < Page {
+			log.Println("it was the last page")
+			break
+		}
+
+		i += Page
+		page++
+	}
+
+	return nil
+}
+
+func load() error {
+	log.Println("requesting messages from", room, "without pagination")
+	chunks, err := client.Messages(room, "", "", 'b', filter, Page)
+	if err != nil {
+		return err
+	}
+	processEvents(chunks)
+	return nil
+}
+
+func processEvents(resp *mautrix.RespMessages) {
+	log.Println("parsing messages chunk:", len(resp.Chunk), "events")
+	for _, evt := range resp.Chunk {
+		message := parseMessage(evt)
+		if message == nil {
+			continue
+		}
+		msgmap[message.ID] = message
+	}
 }
 
 func parseMessage(evt *event.Event) *Message {
@@ -98,6 +150,7 @@ func parseMessage(evt *event.Event) *Message {
 
 func removeReplaced() {
 	var list []id.EventID
+	log.Println("removing replaced messages...")
 	for _, message := range msgmap {
 		if message.Replace != "" {
 			list = append(list, message.Replace)

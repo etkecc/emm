@@ -1,6 +1,8 @@
 package matrix
 
 import (
+	"log"
+
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/id"
 )
@@ -17,6 +19,7 @@ func Init(hs string, login string, password string, roomID id.RoomID, alias id.R
 	if err != nil {
 		return err
 	}
+	log.Println("authorizing...")
 	_, err = client.Login(&mautrix.ReqLogin{
 		Type: "m.login.password",
 		Identifier: mautrix.UserIdentifier{
@@ -31,6 +34,7 @@ func Init(hs string, login string, password string, roomID id.RoomID, alias id.R
 	}
 
 	if roomID == "" {
+		log.Println("resolving room alias...")
 		roomID, err = resolveAlias(alias)
 		if err != nil {
 			return err
