@@ -22,6 +22,8 @@ type Message struct {
 	HTML string
 	// CreatedAt is a timestamp, format: 2006-01-02 15:04 UTC
 	CreatedAt string
+	// CreatedAtFull is a time.Time object
+	CreatedAtFull time.Time
 }
 
 var msgmap map[id.EventID]*Message
@@ -82,13 +84,15 @@ func parseMessage(evt *event.Event) *Message {
 		return nil
 	}
 
+	createdAt := time.UnixMilli(evt.Timestamp).UTC()
 	return &Message{
-		ID:        evt.ID,
-		Replace:   replace,
-		Author:    evt.Sender,
-		Text:      text,
-		HTML:      html,
-		CreatedAt: time.UnixMilli(evt.Timestamp).UTC().Format("2006-01-02 15:04 MST"),
+		ID:            evt.ID,
+		Replace:       replace,
+		Author:        evt.Sender,
+		Text:          text,
+		HTML:          html,
+		CreatedAt:     createdAt.Format("2006-01-02 15:04 MST"),
+		CreatedAtFull: createdAt,
 	}
 }
 

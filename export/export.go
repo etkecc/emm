@@ -18,6 +18,7 @@ author={{ .Author }}
 text={{ .Text }}
 html={{ .HTML }}
 created_at={{ .CreatedAt }}
+created_at_full={{ .CreatedAtFull }}
 `
 
 // Run export
