@@ -1,14 +1,18 @@
 package export
 
 import (
+	"fmt"
+	"os"
 	"text/template"
 
-	"gitlab.com/etke.cc/emm/matrix"
+	"maunium.net/go/mautrix/id"
+
 )
 
 // DefaultTemplate text
 const DefaultTemplate = `
 id={{ .ID }}
+replace={{ .Replace }}
 author={{ .Author }}
 text={{ .Text }}
 html={{ .HTML }}
@@ -22,6 +26,9 @@ func Run(templatePath string, output string, messages []*matrix.Message) error {
 		return err
 	}
 	for _, message := range messages {
+		if message.Replace != "" {
+			remove(output, message.Replace)
+		}
 		err = save(tpl, output, message)
 		if err != nil {
 			return err
@@ -29,6 +36,15 @@ func Run(templatePath string, output string, messages []*matrix.Message) error {
 	}
 
 	return nil
+}
+
+func remove(output string, eventID id.EventID) {
+	if !isMulti(output) {
+		return
+	}
+
+	// nolint // in 99.99% cases it will be "no such file or directory" error, which is ok.
+	os.Remove(fmt.Sprintf(output, eventID))
 }
 
 func save(tpl *template.Template, path string, message *matrix.Message) error {
