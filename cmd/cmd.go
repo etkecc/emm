@@ -26,6 +26,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	defer matrix.Exit()
 
 	log.Println("loading messages...")
 	messages, err := matrix.Messages(*cfg.Limit)

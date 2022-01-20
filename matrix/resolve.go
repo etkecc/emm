@@ -39,7 +39,13 @@ func IsRoom(room string) (bool, error) {
 }
 
 func resolveAlias(alias id.RoomAlias) (id.RoomID, error) {
-	resp, err := client.ResolveAlias(alias)
+	var resp *mautrix.RespAliasResolve
+	err := retry(func() error {
+		var resolveErr error
+		resp, resolveErr = client.ResolveAlias(alias)
+
+		return resolveErr
+	})
 	if err != nil {
 		return "", err
 	}

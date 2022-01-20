@@ -69,8 +69,14 @@ func paginate(limit int) error {
 	var token string
 	page := 1
 	for i := Page; i < limit; {
+		var chunks *mautrix.RespMessages
 		log.Println("requesting messages from", room, "page =", page)
-		chunks, err := client.Messages(room, token, "", 'b', filter, Page)
+		err := retry(func() error {
+			var messagesErr error
+			chunks, messagesErr = client.Messages(room, token, "", 'b', filter, Page)
+
+			return messagesErr
+		})
 		if err != nil {
 			return err
 		}
@@ -94,8 +100,14 @@ func paginate(limit int) error {
 }
 
 func load() error {
+	var chunks *mautrix.RespMessages
 	log.Println("requesting messages from", room, "without pagination")
-	chunks, err := client.Messages(room, "", "", 'b', filter, Page)
+	err := retry(func() error {
+		var messagesErr error
+		chunks, messagesErr = client.Messages(room, "", "", 'b', filter, Page)
+
+		return messagesErr
+	})
 	if err != nil {
 		return err
 	}

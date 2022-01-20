@@ -2,14 +2,23 @@ package matrix
 
 import (
 	"log"
+	"strings"
+	"time"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/id"
 )
 
+// MaxRetries for operations
+const MaxRetries = 10
+
+// RetryDelay between retries
+const RetryDelay = 10 * time.Second
+
 var (
-	client *mautrix.Client
-	room   id.RoomID
+	client     *mautrix.Client
+	room       id.RoomID
+	retriables = []string{"429", "502", "504"}
 )
 
 // Init matrix client
@@ -19,15 +28,18 @@ func Init(hs string, login string, password string, roomID id.RoomID, alias id.R
 	if err != nil {
 		return err
 	}
-	log.Println("authorizing...")
-	_, err = client.Login(&mautrix.ReqLogin{
-		Type: "m.login.password",
-		Identifier: mautrix.UserIdentifier{
-			Type: mautrix.IdentifierTypeUser,
-			User: login,
-		},
-		Password:         password,
-		StoreCredentials: true,
+	err = retry(func() error {
+		log.Println("authorizing...")
+		_, loginErr := client.Login(&mautrix.ReqLogin{
+			Type: "m.login.password",
+			Identifier: mautrix.UserIdentifier{
+				Type: mautrix.IdentifierTypeUser,
+				User: login,
+			},
+			Password:         password,
+			StoreCredentials: true,
+		})
+		return loginErr
 	})
 	if err != nil {
 		return err
@@ -43,4 +55,43 @@ func Init(hs string, login string, password string, roomID id.RoomID, alias id.R
 	room = roomID
 
 	return nil
+}
+
+// Exit / stop matrix client
+func Exit() {
+	// nolint // nobody cares at that moment
+	retry(func() error {
+		log.Println("exiting...")
+		_, logoutErr := client.Logout()
+		return logoutErr
+	})
+}
+
+func retry(handler func() error) error {
+	var err error
+	for i := 0; i < MaxRetries; i++ {
+		if err = handler(); err != nil {
+			if isRetriable(err) {
+				log.Println("error:", err.Error(), ", retyring in", RetryDelay.Seconds(), "seconds")
+				time.Sleep(RetryDelay)
+				continue
+			}
+
+			log.Println("error:", err.Error(), ", considered as non-retriable")
+			break
+		}
+		break
+	}
+
+	return err
+}
+
+func isRetriable(err error) bool {
+	for _, sub := range retriables {
+		if strings.Contains(err.Error(), sub) {
+			return true
+		}
+	}
+
+	return false
 }
