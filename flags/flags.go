@@ -22,6 +22,8 @@ type Config struct {
 	RoomID id.RoomID
 	// RoomAlias
 	RoomAlias id.RoomAlias
+	// Ignore messages by following MXIDs
+	Ignore *string
 	// Limit of messages
 	Limit *int
 	// Template file
@@ -67,6 +69,7 @@ func Parse() (*Config, error) {
 		Password: flag.String("p", "", "Password of the matrix user"),
 		Room:     flag.String("r", "", "Room ID or alias"),
 		Limit:    flag.Int("l", 0, "Messages limit"),
+		Ignore:   flag.String("i", "", "Ignore messages by following MXIDs, separated by comma"),
 		Template: flag.String("t", "", "Template file. Default is JSON message struct"),
 		Output:   flag.String("o", "", "Output filename. If it contains %s, it will be replaced with event ID (one message per file)"),
 	}

@@ -38,6 +38,7 @@ func IsRoom(room string) (bool, error) {
 	return false, errors.New("not a valid room id or alias")
 }
 
+// resolveAlias resolves room alias to a room ID
 func resolveAlias(alias id.RoomAlias) (id.RoomID, error) {
 	var resp *mautrix.RespAliasResolve
 	err := retry(func() error {
@@ -51,4 +52,19 @@ func resolveAlias(alias id.RoomAlias) (id.RoomID, error) {
 	}
 
 	return resp.RoomID, err
+}
+
+// resolveIgnored parses string with list of MXIDs to the `ignore` map
+func resolveIgnored(list string) {
+	slice := strings.Split(list, ",")
+	size := len(slice)
+	if size == 0 {
+		return
+	}
+	v := struct{}{}
+	ignored = make(map[id.UserID]struct{}, len(slice))
+	for _, user := range slice {
+		mxid := id.UserID(strings.TrimSpace(user))
+		ignored[mxid] = v
+	}
 }

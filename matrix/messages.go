@@ -118,6 +118,11 @@ func load() error {
 func processEvents(resp *mautrix.RespMessages) {
 	log.Println("parsing messages chunk:", len(resp.Chunk), "events")
 	for _, evt := range resp.Chunk {
+		_, ignore := ignored[evt.Sender]
+		if ignore {
+			continue
+		}
+
 		message := parseMessage(evt)
 		if message == nil {
 			continue

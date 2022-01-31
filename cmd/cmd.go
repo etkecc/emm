@@ -22,7 +22,7 @@ func main() {
 	resolve()
 
 	log.Println("initializing client...")
-	err = matrix.Init(*cfg.HS, *cfg.Login, *cfg.Password, cfg.RoomID, cfg.RoomAlias)
+	err = matrix.Init(*cfg.HS, *cfg.Login, *cfg.Password, cfg.RoomID, cfg.RoomAlias, *cfg.Ignore)
 	if err != nil {
 		panic(err)
 	}

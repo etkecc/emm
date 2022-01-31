@@ -18,11 +18,12 @@ const RetryDelay = 10 * time.Second
 var (
 	client     *mautrix.Client
 	room       id.RoomID
+	ignored    map[id.UserID]struct{}
 	retriables = []string{"429", "502", "504"}
 )
 
 // Init matrix client
-func Init(hs string, login string, password string, roomID id.RoomID, alias id.RoomAlias) error {
+func Init(hs string, login string, password string, roomID id.RoomID, alias id.RoomAlias, ignore string) error {
 	var err error
 	client, err = mautrix.NewClient(hs, "", "")
 	if err != nil {
@@ -53,6 +54,7 @@ func Init(hs string, login string, password string, roomID id.RoomID, alias id.R
 		}
 	}
 	room = roomID
+	resolveIgnored(ignore)
 
 	return nil
 }
