@@ -18,6 +18,10 @@ type Message struct {
 	ID id.EventID
 	// Replace is a matrix ID of old (replaced) event
 	Replace id.EventID
+	// Replaced is a flag that message was replaced
+	Replaced bool
+	// ReplacedNote is a text note usable from template to mark replaced message as updated
+	ReplacedNote string
 	// Author is a matrix id of the sender
 	Author id.UserID
 	// Text is the message body in plaintext/markdown format
@@ -54,7 +58,7 @@ func Messages(limit int) ([]*Message, error) {
 		return nil, err
 	}
 
-	removeReplaced()
+	markReplaced()
 
 	var messages []*Message
 	for _, message := range msgmap {
@@ -165,15 +169,13 @@ func parseMessage(evt *event.Event) *Message {
 	}
 }
 
-func removeReplaced() {
-	var list []id.EventID
-	log.Println("removing replaced messages...")
+func markReplaced() {
+	log.Println("marking replaced messages...")
 	for _, message := range msgmap {
 		if message.Replace != "" {
-			list = append(list, message.Replace)
+			message.ReplacedNote = " (updated)"
+			msgmap[message.Replace].Replaced = true
+			msgmap[message.Replace].ReplacedNote = " (updated)"
 		}
-	}
-	for _, eventID := range list {
-		delete(msgmap, eventID)
 	}
 }
