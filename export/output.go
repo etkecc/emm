@@ -33,5 +33,5 @@ func getOutputSingle(output string) (*os.File, error) {
 }
 
 func getOutputMulti(output string) (*os.File, error) {
-	return os.OpenFile(output, os.O_WRONLY|os.O_CREATE, 0o644)
+	return os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 }
