@@ -18,8 +18,6 @@ type Message struct {
 	ID id.EventID
 	// Replace is a matrix ID of old (replaced) event
 	Replace id.EventID
-	// Replaced is a flag that message was replaced
-	Replaced bool
 	// ReplacedNote is a text note usable from template to mark replaced message as updated
 	ReplacedNote string
 	// Author is a matrix id of the sender
@@ -48,7 +46,7 @@ var (
 // * some room messages don't contain body/formatted body
 func Messages(limit int) ([]*Message, error) {
 	var err error
-	msgmap = make(map[id.EventID]*Message)
+	msgmap = make(map[id.EventID]*Message, 0)
 	if limit > Page {
 		err = paginate(limit)
 	} else {
@@ -57,8 +55,6 @@ func Messages(limit int) ([]*Message, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	markReplaced()
 
 	var messages []*Message
 	for _, message := range msgmap {
@@ -131,6 +127,23 @@ func processEvents(resp *mautrix.RespMessages) {
 		if message == nil {
 			continue
 		}
+		addMessage(message)
+	}
+}
+
+func addMessage(message *Message) {
+	if message.Replace != "" {
+		message.ID = message.Replace
+		message.ReplacedNote = " (updated)"
+	}
+
+	msg, ok := msgmap[message.ID]
+	if !ok {
+		msgmap[message.ID] = message
+		return
+	}
+
+	if msg.CreatedAtFull.Before(message.CreatedAtFull) {
 		msgmap[message.ID] = message
 	}
 }
@@ -166,16 +179,5 @@ func parseMessage(evt *event.Event) *Message {
 		HTML:          html,
 		CreatedAt:     createdAt.Format("2006-01-02 15:04 MST"),
 		CreatedAtFull: createdAt,
-	}
-}
-
-func markReplaced() {
-	log.Println("marking replaced messages...")
-	for _, message := range msgmap {
-		if message.Replace != "" {
-			message.ReplacedNote = " (updated)"
-			msgmap[message.Replace].Replaced = true
-			msgmap[message.Replace].ReplacedNote = " (updated)"
-		}
 	}
 }

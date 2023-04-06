@@ -24,9 +24,6 @@ func Run(templatePath string, output string, messages []*matrix.Message) error {
 		return err
 	}
 	for _, message := range messages {
-		if message.Replaced {
-			continue
-		}
 		err = save(tpl, output, message)
 		if err != nil {
 			return err
@@ -37,11 +34,7 @@ func Run(templatePath string, output string, messages []*matrix.Message) error {
 }
 
 func save(tpl *template.Template, path string, message *matrix.Message) error {
-	eventID := message.ID
-	if message.Replace != "" {
-		eventID = message.Replace
-	}
-	file, err := getOutput(path, eventID)
+	file, err := getOutput(path, message.ID)
 	if err != nil {
 		return err
 	}
