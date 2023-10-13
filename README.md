@@ -1,4 +1,4 @@
-# emm: Export Matrix Messages [![Matrix](https://img.shields.io/matrix/emm:etke.cc?logo=matrix&style=for-the-badge)](https://matrix.to/#/#emm:etke.cc)[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/etkecc) [![coverage report](https://gitlab.com/etke.cc/emm/badges/main/coverage.svg)](https://gitlab.com/etke.cc/emm/-/commits/main) [![Go Report Card](https://goreportcard.com/badge/gitlab.com/etke.cc/emm)](https://goreportcard.com/report/gitlab.com/etke.cc/emm) [![Go Reference](https://pkg.go.dev/badge/gitlab.com/etke.cc/emm.svg)](https://pkg.go.dev/gitlab.com/etke.cc/emm)
+# emm: Export Matrix Messages
 
 A CLI tool that joins the room and exports last N messages to the file you specified.
 
@@ -43,6 +43,6 @@ Usage of emm:
 
 ## How to get
 
-* [Releases](https://gitlab.com/etke.cc/emm/-/releases) for freebsd, linux and MacOS
-* or `go install gitlab.com/etke.cc/emm@latest` / `make install`
+* [Releases](https://gitlab.com/etke.cc/tools/emm/-/releases) for freebsd, linux and MacOS
+* or `go install gitlab.com/etke.cc/tools/emm@latest`
 * or from source code
