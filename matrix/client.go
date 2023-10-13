@@ -23,7 +23,7 @@ var (
 )
 
 // Init matrix client
-func Init(hs string, login string, password string, roomID id.RoomID, alias id.RoomAlias, ignore string) error {
+func Init(hs, login, password string, roomID id.RoomID, alias id.RoomAlias, ignore string) error {
 	var err error
 	client, err = mautrix.NewClient(hs, "", "")
 	if err != nil {
@@ -61,7 +61,7 @@ func Init(hs string, login string, password string, roomID id.RoomID, alias id.R
 
 // Exit / stop matrix client
 func Exit() {
-	// nolint // nobody cares at that moment
+	//nolint // nobody cares at that moment
 	retry(func() error {
 		log.Println("exiting...")
 		_, logoutErr := client.Logout()

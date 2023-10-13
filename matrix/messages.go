@@ -56,7 +56,7 @@ func Messages(limit int) ([]*Message, error) {
 		return nil, err
 	}
 
-	var messages []*Message
+	messages := make([]*Message, 0, len(msgmap))
 	for _, message := range msgmap {
 		messages = append(messages, message)
 	}

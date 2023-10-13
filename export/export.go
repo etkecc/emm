@@ -3,7 +3,7 @@ package export
 import (
 	"text/template"
 
-	"gitlab.com/etke.cc/emm/matrix"
+	"gitlab.com/etke.cc/tools/emm/matrix"
 )
 
 // DefaultTemplate text
@@ -18,7 +18,7 @@ created_at_full={{ .CreatedAtFull }}
 `
 
 // Run export
-func Run(templatePath string, output string, messages []*matrix.Message) error {
+func Run(templatePath, output string, messages []*matrix.Message) error {
 	tpl, err := createTemplate(templatePath)
 	if err != nil {
 		return err

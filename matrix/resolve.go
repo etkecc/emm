@@ -18,6 +18,8 @@ func ResolveServer(homeserver string) (string, error) {
 }
 
 // IsRoom checks if room is valid room alias or room ID. True = alias, False = room ID
+//
+//nolint:goerr113 // no need
 func IsRoom(room string) (bool, error) {
 	if room == "" {
 		return false, errors.New("room is not set")

@@ -32,7 +32,7 @@ type Config struct {
 	Output *string
 }
 
-// nolint // as-is for now
+//nolint // as-is for now
 func (cfg *Config) validate() error {
 	if cfg.HS == nil || *cfg.HS == "" {
 		return errors.New("-hs is not set. You must specify homeserver URL")
@@ -74,6 +74,7 @@ func Parse() (*Config, error) {
 		Output:   flag.String("o", "", "Output filename. If it contains %s, it will be replaced with event ID (one message per file)"),
 	}
 	flag.Parse()
+	err := cfg.validate()
 
-	return cfg, cfg.validate()
+	return cfg, err
 }

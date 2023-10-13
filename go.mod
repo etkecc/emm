@@ -1,4 +1,4 @@
-module gitlab.com/etke.cc/emm
+module gitlab.com/etke.cc/tools/emm
 
 go 1.17
 

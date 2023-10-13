@@ -20,7 +20,7 @@ nfpms:
     package_name: export-matrix-messages
     maintainer: etke.cc
     description: emm stands for export-matrix-messages, cli tool that can export messages sent into specific matrix room to one or more files
-    homepage: https://gitlab.com/etke.cc/emm
+    homepage: https://gitlab.com/etke.cc/tools/emm
     license: MIT
     formats:
       - deb

@@ -5,9 +5,9 @@ import (
 
 	"maunium.net/go/mautrix/id"
 
-	"gitlab.com/etke.cc/emm/export"
-	"gitlab.com/etke.cc/emm/flags"
-	"gitlab.com/etke.cc/emm/matrix"
+	"gitlab.com/etke.cc/tools/emm/export"
+	"gitlab.com/etke.cc/tools/emm/flags"
+	"gitlab.com/etke.cc/tools/emm/matrix"
 )
 
 var cfg *flags.Config
