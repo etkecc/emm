@@ -22,6 +22,7 @@ var TypeMap = map[Type]reflect.Type{
 	StateCanonicalAlias:    reflect.TypeOf(CanonicalAliasEventContent{}),
 	StateRoomName:          reflect.TypeOf(RoomNameEventContent{}),
 	StateRoomAvatar:        reflect.TypeOf(RoomAvatarEventContent{}),
+	StateServerACL:         reflect.TypeOf(ServerACLEventContent{}),
 	StateTopic:             reflect.TypeOf(TopicEventContent{}),
 	StateTombstone:         reflect.TypeOf(TombstoneEventContent{}),
 	StateCreate:            reflect.TypeOf(CreateEventContent{}),
@@ -29,17 +30,23 @@ var TypeMap = map[Type]reflect.Type{
 	StateHistoryVisibility: reflect.TypeOf(HistoryVisibilityEventContent{}),
 	StateGuestAccess:       reflect.TypeOf(GuestAccessEventContent{}),
 	StatePinnedEvents:      reflect.TypeOf(PinnedEventsEventContent{}),
+	StatePolicyRoom:        reflect.TypeOf(ModPolicyContent{}),
+	StatePolicyServer:      reflect.TypeOf(ModPolicyContent{}),
+	StatePolicyUser:        reflect.TypeOf(ModPolicyContent{}),
 	StateEncryption:        reflect.TypeOf(EncryptionEventContent{}),
 	StateBridge:            reflect.TypeOf(BridgeEventContent{}),
 	StateHalfShotBridge:    reflect.TypeOf(BridgeEventContent{}),
 	StateSpaceParent:       reflect.TypeOf(SpaceParentEventContent{}),
 	StateSpaceChild:        reflect.TypeOf(SpaceChildEventContent{}),
+	StateInsertionMarker:   reflect.TypeOf(InsertionMarkerContent{}),
 
 	EventMessage:   reflect.TypeOf(MessageEventContent{}),
 	EventSticker:   reflect.TypeOf(MessageEventContent{}),
 	EventEncrypted: reflect.TypeOf(EncryptedEventContent{}),
 	EventRedaction: reflect.TypeOf(RedactionEventContent{}),
 	EventReaction:  reflect.TypeOf(ReactionEventContent{}),
+
+	BeeperMessageStatus: reflect.TypeOf(BeeperMessageStatusEventContent{}),
 
 	AccountDataRoomTags:        reflect.TypeOf(TagEventContent{}),
 	AccountDataDirectChats:     reflect.TypeOf(DirectChatsEventContent{}),
@@ -73,6 +80,8 @@ var TypeMap = map[Type]reflect.Type{
 
 	ToDeviceOrgMatrixRoomKeyWithheld: reflect.TypeOf(RoomKeyWithheldEventContent{}),
 
+	ToDeviceBeeperRoomKeyAck: reflect.TypeOf(BeeperRoomKeyAckEventContent{}),
+
 	CallInvite:       reflect.TypeOf(CallInviteEventContent{}),
 	CallCandidates:   reflect.TypeOf(CallCandidatesEventContent{}),
 	CallAnswer:       reflect.TypeOf(CallAnswerEventContent{}),
@@ -84,9 +93,14 @@ var TypeMap = map[Type]reflect.Type{
 
 // Content stores the content of a Matrix event.
 //
-// By default, the content is only parsed into a map[string]interface{}. However, you can call ParseRaw with the
-// correct event type to parse the content into a nicer struct, which you can then access from Parsed or via the
-// helper functions.
+// By default, the raw JSON bytes are stored in VeryRaw and parsed into a map[string]interface{} in the Raw field.
+// Additionally, you can call ParseRaw with the correct event type to parse the (VeryRaw) content into a nicer struct,
+// which you can then access from Parsed or via the helper functions.
+//
+// When being marshaled into JSON, the data in Parsed will be marshaled first and then recursively merged
+// with the data in Raw. Values in Raw are preferred, but nested objects will be recursed into before merging,
+// rather than overriding the whole object with the one in Raw).
+// If one of them is nil, the only the other is used. If both (Parsed and Raw) are nil, VeryRaw is used instead.
 type Content struct {
 	VeryRaw json.RawMessage
 	Raw     map[string]interface{}
@@ -145,20 +159,21 @@ func (content *Content) MarshalJSON() ([]byte, error) {
 	return json.Marshal(content.Raw)
 }
 
+// Deprecated: use errors.Is directly
 func IsUnsupportedContentType(err error) bool {
-	return errors.Is(err, UnsupportedContentType)
+	return errors.Is(err, ErrUnsupportedContentType)
 }
 
-var ContentAlreadyParsed = errors.New("content is already parsed")
-var UnsupportedContentType = errors.New("unsupported event type")
+var ErrContentAlreadyParsed = errors.New("content is already parsed")
+var ErrUnsupportedContentType = errors.New("unsupported event type")
 
 func (content *Content) ParseRaw(evtType Type) error {
 	if content.Parsed != nil {
-		return ContentAlreadyParsed
+		return ErrContentAlreadyParsed
 	}
 	structType, ok := TypeMap[evtType]
 	if !ok {
-		return fmt.Errorf("%w %s", UnsupportedContentType, evtType.Repr())
+		return fmt.Errorf("%w %s", ErrUnsupportedContentType, evtType.Repr())
 	}
 	content.Parsed = reflect.New(structType).Interface()
 	return json.Unmarshal(content.VeryRaw, &content.Parsed)
@@ -481,6 +496,13 @@ func (content *Content) AsCallHangup() *CallHangupEventContent {
 	casted, ok := content.Parsed.(*CallHangupEventContent)
 	if !ok {
 		return &CallHangupEventContent{}
+	}
+	return casted
+}
+func (content *Content) AsModPolicy() *ModPolicyContent {
+	casted, ok := content.Parsed.(*ModPolicyContent)
+	if !ok {
+		return &ModPolicyContent{}
 	}
 	return casted
 }

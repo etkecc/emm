@@ -33,14 +33,15 @@ type PushActionArray []*PushAction
 
 // PushActionArrayShould contains the important information parsed from a PushActionArray.
 type PushActionArrayShould struct {
-	// Whether or not the array contained a Notify, DontNotify or Coalesce action type.
+	// Whether the array contained a Notify, DontNotify or Coalesce action type.
+	// Deprecated: an empty array should be treated as no notification, so there's no reason to check this field.
 	NotifySpecified bool
-	// Whether or not the event in question should trigger a notification.
+	// Whether the event in question should trigger a notification.
 	Notify bool
-	// Whether or not the event in question should be highlighted.
+	// Whether the event in question should be highlighted.
 	Highlight bool
 
-	// Whether or not the event in question should trigger a sound alert.
+	// Whether the event in question should trigger a sound alert.
 	PlaySound bool
 	// The name of the sound to play if PlaySound is true.
 	SoundName string
@@ -83,11 +84,11 @@ type PushAction struct {
 
 // UnmarshalJSON parses JSON into this PushAction.
 //
-//  * If the JSON is a single string, the value is stored in the Action field.
-//  * If the JSON is an object with the set_tweak field, Action will be set to
-//    "set_tweak", Tweak will be set to the value of the set_tweak field and
-//    and Value will be set to the value of the value field.
-//  * In any other case, the function does nothing.
+//   - If the JSON is a single string, the value is stored in the Action field.
+//   - If the JSON is an object with the set_tweak field, Action will be set to
+//     "set_tweak", Tweak will be set to the value of the set_tweak field and
+//     and Value will be set to the value of the value field.
+//   - In any other case, the function does nothing.
 func (action *PushAction) UnmarshalJSON(raw []byte) error {
 	var data interface{}
 

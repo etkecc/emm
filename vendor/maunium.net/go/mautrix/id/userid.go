@@ -52,6 +52,16 @@ func (userID UserID) Parse() (localpart, homeserver string, err error) {
 	return
 }
 
+func (userID UserID) Localpart() string {
+	localpart, _, _ := userID.Parse()
+	return localpart
+}
+
+func (userID UserID) Homeserver() string {
+	_, homeserver, _ := userID.Parse()
+	return homeserver
+}
+
 // URI returns the user ID as a MatrixURI struct, which can then be stringified into a matrix: URI or a matrix.to URL.
 //
 // This does not parse or validate the user ID. Use the ParseAndValidate method if you want to ensure the user ID is valid first.
@@ -62,7 +72,7 @@ func (userID UserID) URI() *MatrixURI {
 	}
 }
 
-var ValidLocalpartRegex = regexp.MustCompile("^[0-9a-z-.=_/]+$")
+var ValidLocalpartRegex = regexp.MustCompile("^[0-9a-z-.=_/+]+$")
 
 // ValidateUserLocalpart validates a Matrix user ID localpart using the grammar
 // in https://matrix.org/docs/spec/appendices#user-identifier
@@ -122,7 +132,7 @@ func escape(buf *bytes.Buffer, b byte) {
 }
 
 func shouldEncode(b byte) bool {
-	return b != '-' && b != '.' && b != '_' && !(b >= '0' && b <= '9') && !(b >= 'a' && b <= 'z') && !(b >= 'A' && b <= 'Z')
+	return b != '-' && b != '.' && b != '_' && b != '+' && !(b >= '0' && b <= '9') && !(b >= 'a' && b <= 'z') && !(b >= 'A' && b <= 'Z')
 }
 
 func shouldEscape(b byte) bool {
@@ -130,7 +140,7 @@ func shouldEscape(b byte) bool {
 }
 
 func isValidByte(b byte) bool {
-	return isValidEscapedChar(b) || (b >= '0' && b <= '9') || b == '.' || b == '=' || b == '-'
+	return isValidEscapedChar(b) || (b >= '0' && b <= '9') || b == '.' || b == '=' || b == '-' || b == '+'
 }
 
 func isValidEscapedChar(b byte) bool {
@@ -138,13 +148,14 @@ func isValidEscapedChar(b byte) bool {
 }
 
 // EncodeUserLocalpart encodes the given string into Matrix-compliant user ID localpart form.
-// See http://matrix.org/docs/spec/intro.html#mapping-from-other-character-sets
+// See https://spec.matrix.org/v1.2/appendices/#mapping-from-other-character-sets
 //
 // This returns a string with only the characters "a-z0-9._=-". The uppercase range A-Z
 // are encoded using leading underscores ("_"). Characters outside the aforementioned ranges
 // (including literal underscores ("_") and equals ("=")) are encoded as UTF8 code points (NOT NCRs)
 // and converted to lower-case hex with a leading "=". For example:
-//   Alph@Bet_50up  => _alph=40_bet=5f50up
+//
+//	Alph@Bet_50up  => _alph=40_bet=5f50up
 func EncodeUserLocalpart(str string) string {
 	strBytes := []byte(str)
 	var outputBuffer bytes.Buffer
@@ -162,11 +173,13 @@ func EncodeUserLocalpart(str string) string {
 
 // DecodeUserLocalpart decodes the given string back into the original input string.
 // Returns an error if the given string is not a valid user ID localpart encoding.
-// See http://matrix.org/docs/spec/intro.html#mapping-from-other-character-sets
+// See https://spec.matrix.org/v1.2/appendices/#mapping-from-other-character-sets
 //
 // This decodes quoted-printable bytes back into UTF8, and unescapes casing. For
 // example:
-//  _alph=40_bet=5f50up  =>  Alph@Bet_50up
+//
+//	_alph=40_bet=5f50up  =>  Alph@Bet_50up
+//
 // Returns an error if the input string contains characters outside the
 // range "a-z0-9._=-", has an invalid quote-printable byte (e.g. not hex), or has
 // an invalid _ escaped byte (e.g. "_5").

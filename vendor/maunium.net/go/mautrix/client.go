@@ -1,6 +1,6 @@
 // Package mautrix implements the Matrix Client-Server API.
 //
-// Specification can be found at http://matrix.org/docs/spec/client_server/r0.4.0.html
+// Specification can be found at https://spec.matrix.org/v1.2/client-server-api/
 package mautrix
 
 import (
@@ -10,67 +10,76 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/rs/zerolog"
+	"go.mau.fi/util/retryafter"
+	"maunium.net/go/maulogger/v2/maulogadapt"
 
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 	"maunium.net/go/mautrix/pushrules"
 )
 
+type CryptoHelper interface {
+	Encrypt(id.RoomID, event.Type, any) (*event.EncryptedEventContent, error)
+	Decrypt(*event.Event) (*event.Event, error)
+	WaitForSession(id.RoomID, id.SenderKey, id.SessionID, time.Duration) bool
+	RequestSession(id.RoomID, id.SenderKey, id.SessionID, id.UserID, id.DeviceID)
+	Init() error
+}
+
+// Deprecated: switch to zerolog
 type Logger interface {
 	Debugfln(message string, args ...interface{})
 }
 
-// StubLogger is an implementation of Logger that does nothing
-type StubLogger struct{}
-
-func (sl *StubLogger) Debugfln(message string, args ...interface{}) {}
-func (sl *StubLogger) Warnfln(message string, args ...interface{})  {}
-
-var stubLogger = &StubLogger{}
-
+// Deprecated: switch to zerolog
 type WarnLogger interface {
 	Logger
 	Warnfln(message string, args ...interface{})
 }
 
-type Stringifiable interface {
-	String() string
-}
-
 // Client represents a Matrix client.
 type Client struct {
 	HomeserverURL *url.URL     // The base homeserver URL
-	Prefix        URLPath      // The API prefix eg '/_matrix/client/r0'
 	UserID        id.UserID    // The user ID of the client. Used for forming HTTP paths which use the client's user ID.
 	DeviceID      id.DeviceID  // The device ID of the client.
 	AccessToken   string       // The access_token for the client.
 	UserAgent     string       // The value for the User-Agent header
 	Client        *http.Client // The underlying HTTP client which will be used to make HTTP requests.
 	Syncer        Syncer       // The thing which can process /sync responses
-	Store         Storer       // The thing which can store rooms/tokens/ids
-	Logger        Logger
-	SyncPresence  event.Presence
+	Store         SyncStore    // The thing which can store tokens/ids
+	StateStore    StateStore
+	Crypto        CryptoHelper
+
+	Log zerolog.Logger
+	// Deprecated: switch to the zerolog instance in Log
+	Logger Logger
+
+	RequestHook  func(req *http.Request)
+	ResponseHook func(req *http.Request, resp *http.Response, duration time.Duration)
+
+	SyncPresence event.Presence
 
 	StreamSyncMinAge time.Duration
 
 	// Number of times that mautrix will retry any HTTP request
 	// if the request fails entirely or returns a HTTP gateway error (502-504)
 	DefaultHTTPRetries int
+	// Set to true to disable automatically sleeping on 429 errors.
+	IgnoreRateLimit bool
 
 	txnID int32
 
-	// The ?user_id= query parameter for application services. This must be set *prior* to calling a method. If this is empty,
-	// no user_id parameter will be sent.
-	// See http://matrix.org/docs/spec/application_service/unstable.html#identity-assertion
-	AppServiceUserID id.UserID
+	// Should the ?user_id= query parameter be set in requests?
+	// See https://spec.matrix.org/v1.6/application-service-api/#identity-assertion
+	SetAppServiceUserID bool
 
 	syncingID uint32 // Identifies the current Sync. Only one Sync can be active at any given time.
 }
@@ -90,7 +99,7 @@ type IdentityServerInfo struct {
 
 // DiscoverClientAPI resolves the client API URL from a Matrix server name.
 // Use ParseUserID to extract the server name from a user ID.
-// https://matrix.org/docs/spec/client_server/r0.6.0#server-discovery
+// https://spec.matrix.org/v1.2/client-server-api/#server-discovery
 func DiscoverClientAPI(serverName string) (*ClientWellKnown, error) {
 	wellKnownURL := url.URL{
 		Scheme: "https",
@@ -104,7 +113,7 @@ func DiscoverClientAPI(serverName string) (*ClientWellKnown, error) {
 	}
 
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", DefaultUserAgent+" .well-known fetcher")
+	req.Header.Set("User-Agent", DefaultUserAgent+" (.well-known fetcher)")
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -117,7 +126,7 @@ func DiscoverClientAPI(serverName string) (*ClientWellKnown, error) {
 		return nil, nil
 	}
 
-	data, err := ioutil.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -129,72 +138,6 @@ func DiscoverClientAPI(serverName string) (*ClientWellKnown, error) {
 	}
 
 	return &wellKnown, nil
-}
-
-// BuildURL builds a URL with the given path parts
-func BuildURL(baseURL *url.URL, path ...interface{}) *url.URL {
-	createdURL := *baseURL
-	rawParts := make([]string, len(path)+1)
-	rawParts[0] = strings.TrimSuffix(createdURL.RawPath, "/")
-	parts := make([]string, len(path)+1)
-	parts[0] = strings.TrimSuffix(createdURL.Path, "/")
-	for i, part := range path {
-		switch casted := part.(type) {
-		case string:
-			parts[i+1] = casted
-		case int:
-			parts[i+1] = strconv.Itoa(casted)
-		case Stringifiable:
-			parts[i+1] = casted.String()
-		default:
-			parts[i+1] = fmt.Sprint(casted)
-		}
-		rawParts[i+1] = url.PathEscape(parts[i+1])
-	}
-	createdURL.Path = strings.Join(parts, "/")
-	createdURL.RawPath = strings.Join(rawParts, "/")
-	return &createdURL
-}
-
-// BuildURL builds a URL with the Client's homeserver and appservice user ID set already.
-func (cli *Client) BuildURL(urlPath ...interface{}) string {
-	return cli.BuildBaseURL(append(cli.Prefix, urlPath...)...)
-}
-
-// BuildBaseURL builds a URL with the Client's homeserver and appservice user ID set already.
-// You must supply the prefix in the path.
-func (cli *Client) BuildBaseURL(urlPath ...interface{}) string {
-	return cli.BuildBaseURLWithQuery(urlPath, nil)
-}
-
-type URLPath = []interface{}
-
-// BuildURLWithQuery builds a URL with query parameters in addition to the Client's
-// homeserver and appservice user ID set already.
-func (cli *Client) BuildURLWithQuery(urlPath URLPath, urlQuery map[string]string) string {
-	return cli.BuildBaseURLWithQuery(append(cli.Prefix, urlPath...), urlQuery)
-}
-
-// BuildBaseURLWithQuery builds a URL with query parameters in addition to the Client's homeserver
-// and appservice user ID set already. You must supply the prefix in the path.
-func (cli *Client) BuildBaseURLWithQuery(urlPath URLPath, urlQuery map[string]string) string {
-	// Dereference the URL to copy it
-	hsURL := *cli.HomeserverURL
-	if hsURL.Scheme == "" {
-		hsURL.Scheme = "https"
-	}
-	hsURL = *BuildURL(&hsURL, urlPath...)
-	query := hsURL.Query()
-	if cli.AppServiceUserID != "" {
-		query.Set("user_id", string(cli.AppServiceUserID))
-	}
-	if urlQuery != nil {
-		for k, v := range urlQuery {
-			query.Set(k, v)
-		}
-	}
-	hsURL.RawQuery = query.Encode()
-	return hsURL.String()
 }
 
 // SetCredentials sets the user ID and access token on this client instance.
@@ -220,6 +163,7 @@ func (cli *Client) ClearCredentials() {
 //   - The failure to create a filter.
 //   - Client.Syncer.OnFailedSync returning an error in response to a failed sync.
 //   - Client.Syncer.ProcessResponse returning an error.
+//
 // If you wish to continue retrying in spite of these fatal errors, call Sync() again.
 func (cli *Client) Sync() error {
 	return cli.SyncWithContext(context.Background())
@@ -245,7 +189,7 @@ func (cli *Client) SyncWithContext(ctx context.Context) error {
 	for {
 		streamResp := false
 		if cli.StreamSyncMinAge > 0 && time.Since(lastSuccessfulSync) > cli.StreamSyncMinAge {
-			cli.Logger.Debugfln("Last sync is old, will stream next response")
+			cli.Log.Debug().Msg("Last sync is old, will stream next response")
 			streamResp = true
 		}
 		resSync, err := cli.FullSyncRequest(ReqSync{
@@ -265,8 +209,12 @@ func (cli *Client) SyncWithContext(ctx context.Context) error {
 			if err2 != nil {
 				return err2
 			}
-			time.Sleep(duration)
-			continue
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(duration):
+				continue
+			}
 		}
 		lastSuccessfulSync = time.Now()
 
@@ -303,19 +251,58 @@ func (cli *Client) StopSync() {
 	cli.incrementSyncingID()
 }
 
-const logBodyContextKey = "fi.mau.mautrix.log_body"
-const logRequestIDContextKey = "fi.mau.mautrix.request_id"
+type contextKey int
 
-func (cli *Client) LogRequest(req *http.Request) {
-	if cli.Logger == stubLogger {
-		return
+const (
+	LogBodyContextKey contextKey = iota
+	LogRequestIDContextKey
+)
+
+func (cli *Client) RequestStart(req *http.Request) {
+	if cli.RequestHook != nil {
+		cli.RequestHook(req)
 	}
-	body, ok := req.Context().Value(logBodyContextKey).(string)
-	reqID, _ := req.Context().Value(logRequestIDContextKey).(int)
-	if ok && len(body) > 0 {
-		cli.Logger.Debugfln("req #%d: %s %s %s", reqID, req.Method, req.URL.String(), body)
+}
+
+func (cli *Client) LogRequestDone(req *http.Request, resp *http.Response, err error, handlerErr error, contentLength int, duration time.Duration) {
+	var evt *zerolog.Event
+	if err != nil {
+		evt = zerolog.Ctx(req.Context()).Err(err)
+	} else if handlerErr != nil {
+		evt = zerolog.Ctx(req.Context()).Warn().
+			AnErr("body_parse_err", handlerErr)
 	} else {
-		cli.Logger.Debugfln("req #%d: %s %s", reqID, req.Method, req.URL.String())
+		evt = zerolog.Ctx(req.Context()).Debug()
+	}
+	evt = evt.
+		Str("method", req.Method).
+		Str("url", req.URL.String()).
+		Dur("duration", duration)
+	if resp != nil {
+		if cli.ResponseHook != nil {
+			cli.ResponseHook(req, resp, duration)
+		}
+		mime := resp.Header.Get("Content-Type")
+		length := resp.ContentLength
+		if length == -1 && contentLength > 0 {
+			length = int64(contentLength)
+		}
+		evt = evt.Int("status_code", resp.StatusCode).
+			Int64("response_length", length).
+			Str("response_mime", mime)
+		if serverRequestID := resp.Header.Get("X-Beeper-Request-ID"); serverRequestID != "" {
+			evt.Str("beeper_request_id", serverRequestID)
+		}
+	}
+	if body := req.Context().Value(LogBodyContextKey); body != nil {
+		evt.Interface("req_body", body)
+	}
+	if err != nil {
+		evt.Msg("Request failed")
+	} else if handlerErr != nil {
+		evt.Msg("Request parsing failed")
+	} else {
+		evt.Msg("Request completed")
 	}
 }
 
@@ -330,6 +317,7 @@ type FullRequest struct {
 	URL              string
 	Headers          http.Header
 	RequestJSON      interface{}
+	RequestBytes     []byte
 	RequestBody      io.Reader
 	RequestLength    int64
 	ResponseJSON     interface{}
@@ -337,13 +325,14 @@ type FullRequest struct {
 	MaxAttempts      int
 	SensitiveContent bool
 	Handler          ClientResponseHandler
+	Logger           *zerolog.Logger
 }
 
 var requestID int32
 var logSensitiveContent = os.Getenv("MAUTRIX_LOG_SENSITIVE_CONTENT") == "yes"
 
 func (params *FullRequest) compileRequest() (*http.Request, error) {
-	var logBody string
+	var logBody any
 	reqBody := params.RequestBody
 	if params.Context == nil {
 		params.Context = context.Background()
@@ -359,15 +348,31 @@ func (params *FullRequest) compileRequest() (*http.Request, error) {
 		if params.SensitiveContent && !logSensitiveContent {
 			logBody = "<sensitive content omitted>"
 		} else {
-			logBody = string(jsonStr)
+			logBody = params.RequestJSON
 		}
-		reqBody = bytes.NewBuffer(jsonStr)
+		reqBody = bytes.NewReader(jsonStr)
+	} else if params.RequestBytes != nil {
+		logBody = fmt.Sprintf("<%d bytes>", len(params.RequestBytes))
+		reqBody = bytes.NewReader(params.RequestBytes)
+		params.RequestLength = int64(len(params.RequestBytes))
 	} else if params.RequestLength > 0 && params.RequestBody != nil {
 		logBody = fmt.Sprintf("<%d bytes>", params.RequestLength)
+	} else if params.Method != http.MethodGet && params.Method != http.MethodHead {
+		params.RequestJSON = struct{}{}
+		logBody = params.RequestJSON
+		reqBody = bytes.NewReader([]byte("{}"))
 	}
-	ctx := context.WithValue(params.Context, logBodyContextKey, logBody)
 	reqID := atomic.AddInt32(&requestID, 1)
-	ctx = context.WithValue(ctx, logRequestIDContextKey, int(reqID))
+	ctx := params.Context
+	logger := zerolog.Ctx(ctx)
+	if logger.GetLevel() == zerolog.Disabled || logger == zerolog.DefaultContextLogger {
+		logger = params.Logger
+	}
+	ctx = logger.With().
+		Int32("req_id", reqID).
+		Logger().WithContext(ctx)
+	ctx = context.WithValue(ctx, LogBodyContextKey, logBody)
+	ctx = context.WithValue(ctx, LogRequestIDContextKey, int(reqID))
 	req, err := http.NewRequestWithContext(ctx, params.Method, params.URL, reqBody)
 	if err != nil {
 		return nil, HTTPError{
@@ -397,12 +402,15 @@ func (cli *Client) MakeFullRequest(params FullRequest) ([]byte, error) {
 	if params.MaxAttempts == 0 {
 		params.MaxAttempts = 1 + cli.DefaultHTTPRetries
 	}
+	if params.Logger == nil {
+		params.Logger = &cli.Log
+	}
 	req, err := params.compileRequest()
 	if err != nil {
 		return nil, err
 	}
 	if params.Handler == nil {
-		params.Handler = cli.handleNormalResponse
+		params.Handler = handleNormalResponse
 	}
 	req.Header.Set("User-Agent", cli.UserAgent)
 	if len(cli.AccessToken) > 0 {
@@ -411,36 +419,37 @@ func (cli *Client) MakeFullRequest(params FullRequest) ([]byte, error) {
 	return cli.executeCompiledRequest(req, params.MaxAttempts-1, 4*time.Second, params.ResponseJSON, params.Handler)
 }
 
-func (cli *Client) logWarning(format string, args ...interface{}) {
-	warnLogger, ok := cli.Logger.(WarnLogger)
-	if ok {
-		warnLogger.Warnfln(format, args...)
-	} else {
-		cli.Logger.Debugfln(format, args...)
+func (cli *Client) cliOrContextLog(ctx context.Context) *zerolog.Logger {
+	log := zerolog.Ctx(ctx)
+	if log.GetLevel() == zerolog.Disabled || log == zerolog.DefaultContextLogger {
+		return &cli.Log
 	}
+	return log
 }
 
 func (cli *Client) doRetry(req *http.Request, cause error, retries int, backoff time.Duration, responseJSON interface{}, handler ClientResponseHandler) ([]byte, error) {
-	reqID, _ := req.Context().Value(logRequestIDContextKey).(int)
+	log := zerolog.Ctx(req.Context())
 	if req.Body != nil {
 		if req.GetBody == nil {
-			cli.logWarning("Failed to get new body to retry request #%d: GetBody is nil", reqID)
+			log.Warn().Msg("Failed to get new body to retry request: GetBody is nil")
 			return nil, cause
 		}
 		var err error
 		req.Body, err = req.GetBody()
 		if err != nil {
-			cli.logWarning("Failed to get new body to retry request #%d: %v", reqID, err)
+			log.Warn().Err(err).Msg("Failed to get new body to retry request")
 			return nil, cause
 		}
 	}
-	cli.logWarning("Request #%d failed: %v, retrying in %d seconds", reqID, cause, int(backoff.Seconds()))
+	log.Warn().Err(cause).
+		Int("retry_in_seconds", int(backoff.Seconds())).
+		Msg("Request failed, retrying")
 	time.Sleep(backoff)
 	return cli.executeCompiledRequest(req, retries-1, backoff*2, responseJSON, handler)
 }
 
-func (cli *Client) readRequestBody(req *http.Request, res *http.Response) ([]byte, error) {
-	contents, err := ioutil.ReadAll(res.Body)
+func readRequestBody(req *http.Request, res *http.Response) ([]byte, error) {
+	contents, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, HTTPError{
 			Request:  req,
@@ -453,22 +462,23 @@ func (cli *Client) readRequestBody(req *http.Request, res *http.Response) ([]byt
 	return contents, nil
 }
 
-func (cli *Client) closeTemp(file *os.File) {
+func closeTemp(log *zerolog.Logger, file *os.File) {
 	_ = file.Close()
 	err := os.Remove(file.Name())
 	if err != nil {
-		cli.logWarning("Failed to remove temp file %s: %v", file.Name(), err)
+		log.Warn().Err(err).Str("file_name", file.Name()).Msg("Failed to remove response temp file")
 	}
 }
 
-func (cli *Client) streamResponse(req *http.Request, res *http.Response, responseJSON interface{}) ([]byte, error) {
-	file, err := ioutil.TempFile("", "mautrix-response-")
+func streamResponse(req *http.Request, res *http.Response, responseJSON interface{}) ([]byte, error) {
+	log := zerolog.Ctx(req.Context())
+	file, err := os.CreateTemp("", "mautrix-response-")
 	if err != nil {
-		cli.logWarning("Failed to create temporary file: %v", err)
-		_, err = cli.handleNormalResponse(req, res, responseJSON)
+		log.Warn().Err(err).Msg("Failed to create temporary file for streaming response")
+		_, err = handleNormalResponse(req, res, responseJSON)
 		return nil, err
 	}
-	defer cli.closeTemp(file)
+	defer closeTemp(log, file)
 	if _, err = io.Copy(file, res.Body); err != nil {
 		return nil, fmt.Errorf("failed to copy response to file: %w", err)
 	} else if _, err = file.Seek(0, 0); err != nil {
@@ -480,8 +490,8 @@ func (cli *Client) streamResponse(req *http.Request, res *http.Response, respons
 	}
 }
 
-func (cli *Client) handleNormalResponse(req *http.Request, res *http.Response, responseJSON interface{}) ([]byte, error) {
-	if contents, err := cli.readRequestBody(req, res); err != nil {
+func handleNormalResponse(req *http.Request, res *http.Response, responseJSON interface{}) ([]byte, error) {
+	if contents, err := readRequestBody(req, res); err != nil {
 		return nil, err
 	} else if responseJSON == nil {
 		return contents, nil
@@ -499,8 +509,8 @@ func (cli *Client) handleNormalResponse(req *http.Request, res *http.Response, r
 	}
 }
 
-func (cli *Client) handleResponseError(req *http.Request, res *http.Response) ([]byte, error) {
-	contents, err := cli.readRequestBody(req, res)
+func ParseErrorResponse(req *http.Request, res *http.Response) ([]byte, error) {
+	contents, err := readRequestBody(req, res)
 	if err != nil {
 		return contents, err
 	}
@@ -518,8 +528,10 @@ func (cli *Client) handleResponseError(req *http.Request, res *http.Response) ([
 }
 
 func (cli *Client) executeCompiledRequest(req *http.Request, retries int, backoff time.Duration, responseJSON interface{}, handler ClientResponseHandler) ([]byte, error) {
-	cli.LogRequest(req)
+	cli.RequestStart(req)
+	startTime := time.Now()
 	res, err := cli.Client.Do(req)
+	duration := time.Now().Sub(startTime)
 	if res != nil {
 		defer res.Body.Close()
 	}
@@ -527,40 +539,48 @@ func (cli *Client) executeCompiledRequest(req *http.Request, retries int, backof
 		if retries > 0 {
 			return cli.doRetry(req, err, retries, backoff, responseJSON, handler)
 		}
-		return nil, HTTPError{
+		err = HTTPError{
 			Request:  req,
 			Response: res,
 
 			Message:      "request error",
 			WrappedError: err,
 		}
+		cli.LogRequestDone(req, res, err, nil, 0, duration)
+		return nil, err
 	}
 
-	if retries > 0 && (res.StatusCode == http.StatusBadGateway || res.StatusCode == http.StatusServiceUnavailable || res.StatusCode == http.StatusGatewayTimeout) {
+	if retries > 0 && retryafter.Should(res.StatusCode, !cli.IgnoreRateLimit) {
+		backoff = retryafter.Parse(res.Header.Get("Retry-After"), backoff)
 		return cli.doRetry(req, fmt.Errorf("HTTP %d", res.StatusCode), retries, backoff, responseJSON, handler)
 	}
 
+	var body []byte
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return cli.handleResponseError(req, res)
+		body, err = ParseErrorResponse(req, res)
+		cli.LogRequestDone(req, res, nil, nil, len(body), duration)
+	} else {
+		body, err = handler(req, res, responseJSON)
+		cli.LogRequestDone(req, res, nil, err, len(body), duration)
 	}
-	return handler(req, res, responseJSON)
+	return body, err
 }
 
-// Whoami gets the user ID of the current user. See https://matrix.org/docs/spec/client_server/r0.6.1#post-matrix-client-r0-rooms-roomid-join
+// Whoami gets the user ID of the current user. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3accountwhoami
 func (cli *Client) Whoami() (resp *RespWhoami, err error) {
-	urlPath := cli.BuildURL("account", "whoami")
+	urlPath := cli.BuildClientURL("v3", "account", "whoami")
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
 	return
 }
 
-// CreateFilter makes an HTTP request according to http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-user-userid-filter
+// CreateFilter makes an HTTP request according to https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3useruseridfilter
 func (cli *Client) CreateFilter(filter *Filter) (resp *RespCreateFilter, err error) {
-	urlPath := cli.BuildURL("user", cli.UserID, "filter")
+	urlPath := cli.BuildClientURL("v3", "user", cli.UserID, "filter")
 	_, err = cli.MakeRequest("POST", urlPath, filter, &resp)
 	return
 }
 
-// SyncRequest makes an HTTP request according to http://matrix.org/docs/spec/client_server/r0.2.0.html#get-matrix-client-r0-sync
+// SyncRequest makes an HTTP request according to https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3sync
 func (cli *Client) SyncRequest(timeout int, since, filterID string, fullState bool, setPresence event.Presence, ctx context.Context) (resp *RespSync, err error) {
 	return cli.FullSyncRequest(ReqSync{
 		Timeout:     timeout,
@@ -602,9 +622,9 @@ func (req *ReqSync) BuildQuery() map[string]string {
 	return query
 }
 
-// FullSyncRequest makes an HTTP request according to http://matrix.org/docs/spec/client_server/r0.2.0.html#get-matrix-client-r0-sync
+// FullSyncRequest makes an HTTP request according to https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3sync
 func (cli *Client) FullSyncRequest(req ReqSync) (resp *RespSync, err error) {
-	urlPath := cli.BuildURLWithQuery(URLPath{"sync"}, req.BuildQuery())
+	urlPath := cli.BuildURLWithQuery(ClientURLPath{"v3", "sync"}, req.BuildQuery())
 	fullReq := FullRequest{
 		Method:       http.MethodGet,
 		URL:          urlPath,
@@ -614,18 +634,53 @@ func (cli *Client) FullSyncRequest(req ReqSync) (resp *RespSync, err error) {
 		MaxAttempts: 1,
 	}
 	if req.StreamResponse {
-		fullReq.Handler = cli.streamResponse
+		fullReq.Handler = streamResponse
 	}
 	start := time.Now()
 	_, err = cli.MakeFullRequest(fullReq)
 	duration := time.Now().Sub(start)
 	timeout := time.Duration(req.Timeout) * time.Millisecond
-	buffer := 5 * time.Second
+	buffer := 10 * time.Second
 	if req.Since == "" {
 		buffer = 1 * time.Minute
 	}
-	if duration > timeout+buffer {
-		cli.logWarning("Sync request (%s) took %s with timeout %s", req.Since, duration, timeout)
+	if err == nil && duration > timeout+buffer {
+		cli.cliOrContextLog(fullReq.Context).Warn().
+			Str("since", req.Since).
+			Dur("duration", duration).
+			Dur("timeout", timeout).
+			Msg("Sync request took unusually long")
+	}
+	return
+}
+
+// RegisterAvailable checks if a username is valid and available for registration on the server.
+//
+// See https://spec.matrix.org/v1.4/client-server-api/#get_matrixclientv3registeravailable for more details
+//
+// This will always return an error if the username isn't available, so checking the actual response struct is generally
+// not necessary. It is still returned for future-proofing. For a simple availability check, just check that the returned
+// error is nil. `errors.Is` can be used to find the exact reason why a username isn't available:
+//
+//	_, err := cli.RegisterAvailable("cat")
+//	if errors.Is(err, mautrix.MUserInUse) {
+//		// Username is taken
+//	} else if errors.Is(err, mautrix.MInvalidUsername) {
+//		// Username is not valid
+//	} else if errors.Is(err, mautrix.MExclusive) {
+//		// Username is reserved for an appservice
+//	} else if errors.Is(err, mautrix.MLimitExceeded) {
+//		// Too many requests
+//	} else if err != nil {
+//		// Unknown error
+//	} else {
+//		// Username is available
+//	}
+func (cli *Client) RegisterAvailable(username string) (resp *RespRegisterAvailable, err error) {
+	u := cli.BuildURLWithQuery(ClientURLPath{"v3", "register", "available"}, map[string]string{"username": username})
+	_, err = cli.MakeRequest(http.MethodGet, u, nil, &resp)
+	if err == nil && !resp.Available {
+		err = fmt.Errorf(`request returned OK status without "available": true`)
 	}
 	return
 }
@@ -651,15 +706,15 @@ func (cli *Client) register(url string, req *ReqRegister) (resp *RespRegister, u
 	return
 }
 
-// Register makes an HTTP request according to http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-register
+// Register makes an HTTP request according to https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3register
 //
 // Registers with kind=user. For kind=guest, see RegisterGuest.
 func (cli *Client) Register(req *ReqRegister) (*RespRegister, *RespUserInteractive, error) {
-	u := cli.BuildURL("register")
+	u := cli.BuildClientURL("v3", "register")
 	return cli.register(u, req)
 }
 
-// RegisterGuest makes an HTTP request according to http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-register
+// RegisterGuest makes an HTTP request according to https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3register
 // with kind=guest.
 //
 // For kind=user, see Register.
@@ -667,25 +722,25 @@ func (cli *Client) RegisterGuest(req *ReqRegister) (*RespRegister, *RespUserInte
 	query := map[string]string{
 		"kind": "guest",
 	}
-	u := cli.BuildURLWithQuery(URLPath{"register"}, query)
+	u := cli.BuildURLWithQuery(ClientURLPath{"v3", "register"}, query)
 	return cli.register(u, req)
 }
 
-// RegisterDummy performs m.login.dummy registration according to https://matrix.org/docs/spec/client_server/r0.2.0.html#dummy-auth
+// RegisterDummy performs m.login.dummy registration according to https://spec.matrix.org/v1.2/client-server-api/#dummy-auth
 //
 // Only a username and password need to be provided on the ReqRegister struct. Most local/developer homeservers will allow registration
 // this way. If the homeserver does not, an error is returned.
 //
 // This does not set credentials on the client instance. See SetCredentials() instead.
 //
-// 	res, err := cli.RegisterDummy(&mautrix.ReqRegister{
+//	res, err := cli.RegisterDummy(&mautrix.ReqRegister{
 //		Username: "alice",
 //		Password: "wonderland",
 //	})
-//  if err != nil {
-// 		panic(err)
-// 	}
-// 	token := res.AccessToken
+//	if err != nil {
+//		panic(err)
+//	}
+//	token := res.AccessToken
 func (cli *Client) RegisterDummy(req *ReqRegister) (*RespRegister, error) {
 	res, uia, err := cli.Register(req)
 	if err != nil && uia == nil {
@@ -703,17 +758,18 @@ func (cli *Client) RegisterDummy(req *ReqRegister) (*RespRegister, error) {
 	return res, nil
 }
 
+// GetLoginFlows fetches the login flows that the homeserver supports using https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3login
 func (cli *Client) GetLoginFlows() (resp *RespLoginFlows, err error) {
-	urlPath := cli.BuildURL("login")
+	urlPath := cli.BuildClientURL("v3", "login")
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
 	return
 }
 
-// Login a user to the homeserver according to http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-login
+// Login a user to the homeserver according to https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3login
 func (cli *Client) Login(req *ReqLogin) (resp *RespLogin, err error) {
 	_, err = cli.MakeFullRequest(FullRequest{
 		Method:           http.MethodPost,
-		URL:              cli.BuildURL("login"),
+		URL:              cli.BuildClientURL("v3", "login"),
 		RequestJSON:      req,
 		ResponseJSON:     &resp,
 		SensitiveContent: len(req.Password) > 0 || len(req.Token) > 0,
@@ -722,84 +778,112 @@ func (cli *Client) Login(req *ReqLogin) (resp *RespLogin, err error) {
 		cli.DeviceID = resp.DeviceID
 		cli.AccessToken = resp.AccessToken
 		cli.UserID = resp.UserID
-		cli.Logger.Debugfln("Stored credentials for %s/%s after login", cli.UserID, cli.DeviceID)
+
+		cli.Log.Debug().
+			Str("user_id", cli.UserID.String()).
+			Str("device_id", cli.DeviceID.String()).
+			Msg("Stored credentials after login")
 	}
 	if req.StoreHomeserverURL && err == nil && resp.WellKnown != nil && len(resp.WellKnown.Homeserver.BaseURL) > 0 {
 		var urlErr error
 		cli.HomeserverURL, urlErr = url.Parse(resp.WellKnown.Homeserver.BaseURL)
 		if urlErr != nil {
-			cli.logWarning("Failed to parse homeserver URL '%s' in login response: %v", resp.WellKnown.Homeserver.BaseURL, urlErr)
+			cli.Log.Warn().
+				Err(urlErr).
+				Str("homeserver_url", resp.WellKnown.Homeserver.BaseURL).
+				Msg("Failed to parse homeserver URL in login response")
 		} else {
-			cli.Logger.Debugfln("Updated homeserver URL to %s after login", cli.HomeserverURL.String())
+			cli.Log.Debug().
+				Str("homeserver_url", cli.HomeserverURL.String()).
+				Msg("Updated homeserver URL after login")
 		}
 	}
 	return
 }
 
-// Logout the current user. See http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-logout
+// Logout the current user. See https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3logout
 // This does not clear the credentials from the client instance. See ClearCredentials() instead.
 func (cli *Client) Logout() (resp *RespLogout, err error) {
-	urlPath := cli.BuildURL("logout")
+	urlPath := cli.BuildClientURL("v3", "logout")
 	_, err = cli.MakeRequest("POST", urlPath, nil, &resp)
 	return
 }
 
-// LogoutAll logs out all the devices of the current user. See https://matrix.org/docs/spec/client_server/r0.6.1#post-matrix-client-r0-logout-all
+// LogoutAll logs out all the devices of the current user. See https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3logoutall
 // This does not clear the credentials from the client instance. See ClearCredentials() instead.
 func (cli *Client) LogoutAll() (resp *RespLogout, err error) {
-	urlPath := cli.BuildURL("logout", "all")
+	urlPath := cli.BuildClientURL("v3", "logout", "all")
 	_, err = cli.MakeRequest("POST", urlPath, nil, &resp)
 	return
 }
 
-// Versions returns the list of supported Matrix versions on this homeserver. See http://matrix.org/docs/spec/client_server/r0.6.1.html#get-matrix-client-versions
+// Versions returns the list of supported Matrix versions on this homeserver. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientversions
 func (cli *Client) Versions() (resp *RespVersions, err error) {
-	urlPath := cli.BuildBaseURL("_matrix", "client", "versions")
+	urlPath := cli.BuildClientURL("versions")
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
 	return
 }
 
-// JoinRoom joins the client to a room ID or alias. See http://matrix.org/docs/spec/client_server/r0.6.1.html#post-matrix-client-r0-join-roomidoralias
+// Capabilities returns capabilities on this homeserver. See https://spec.matrix.org/v1.3/client-server-api/#capabilities-negotiation
+func (cli *Client) Capabilities() (resp *RespCapabilities, err error) {
+	urlPath := cli.BuildClientURL("v3", "capabilities")
+	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
+	return
+}
+
+// JoinRoom joins the client to a room ID or alias. See https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3joinroomidoralias
 //
 // If serverName is specified, this will be added as a query param to instruct the homeserver to join via that server. If content is specified, it will
 // be JSON encoded and used as the request body.
 func (cli *Client) JoinRoom(roomIDorAlias, serverName string, content interface{}) (resp *RespJoinRoom, err error) {
 	var urlPath string
 	if serverName != "" {
-		urlPath = cli.BuildURLWithQuery(URLPath{"join", roomIDorAlias}, map[string]string{
+		urlPath = cli.BuildURLWithQuery(ClientURLPath{"v3", "join", roomIDorAlias}, map[string]string{
 			"server_name": serverName,
 		})
 	} else {
-		urlPath = cli.BuildURL("join", roomIDorAlias)
+		urlPath = cli.BuildClientURL("v3", "join", roomIDorAlias)
 	}
 	_, err = cli.MakeRequest("POST", urlPath, content, &resp)
+	if err == nil && cli.StateStore != nil {
+		cli.StateStore.SetMembership(resp.RoomID, cli.UserID, event.MembershipJoin)
+	}
 	return
 }
 
-// JoinRoomByID joins the client to a room ID. See https://matrix.org/docs/spec/client_server/r0.6.1#post-matrix-client-r0-rooms-roomid-join
+// JoinRoomByID joins the client to a room ID. See https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidjoin
 //
 // Unlike JoinRoom, this method can only be used to join rooms that the server already knows about.
 // It's mostly intended for bridges and other things where it's already certain that the server is in the room.
 func (cli *Client) JoinRoomByID(roomID id.RoomID) (resp *RespJoinRoom, err error) {
-	_, err = cli.MakeRequest("POST", cli.BuildURL("rooms", roomID, "join"), nil, &resp)
+	_, err = cli.MakeRequest("POST", cli.BuildClientURL("v3", "rooms", roomID, "join"), nil, &resp)
+	if err == nil && cli.StateStore != nil {
+		cli.StateStore.SetMembership(resp.RoomID, cli.UserID, event.MembershipJoin)
+	}
 	return
 }
 
-// GetDisplayName returns the display name of the user with the specified MXID. See https://matrix.org/docs/spec/client_server/r0.6.1.html#get-matrix-client-r0-profile-userid-displayname
-func (cli *Client) GetDisplayName(mxid id.UserID) (resp *RespUserDisplayName, err error) {
-	urlPath := cli.BuildURL("profile", mxid, "displayname")
+func (cli *Client) GetProfile(mxid id.UserID) (resp *RespUserProfile, err error) {
+	urlPath := cli.BuildClientURL("v3", "profile", mxid)
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
 	return
 }
 
-// GetOwnDisplayName returns the user's display name. See https://matrix.org/docs/spec/client_server/r0.6.1.html#get-matrix-client-r0-profile-userid-displayname
+// GetDisplayName returns the display name of the user with the specified MXID. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3profileuseriddisplayname
+func (cli *Client) GetDisplayName(mxid id.UserID) (resp *RespUserDisplayName, err error) {
+	urlPath := cli.BuildClientURL("v3", "profile", mxid, "displayname")
+	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
+	return
+}
+
+// GetOwnDisplayName returns the user's display name. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3profileuseriddisplayname
 func (cli *Client) GetOwnDisplayName() (resp *RespUserDisplayName, err error) {
 	return cli.GetDisplayName(cli.UserID)
 }
 
-// SetDisplayName sets the user's profile display name. See http://matrix.org/docs/spec/client_server/r0.6.1.html#put-matrix-client-r0-profile-userid-displayname
+// SetDisplayName sets the user's profile display name. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3profileuseriddisplayname
 func (cli *Client) SetDisplayName(displayName string) (err error) {
-	urlPath := cli.BuildURL("profile", cli.UserID, "displayname")
+	urlPath := cli.BuildClientURL("v3", "profile", cli.UserID, "displayname")
 	s := struct {
 		DisplayName string `json:"displayname"`
 	}{displayName}
@@ -807,9 +891,9 @@ func (cli *Client) SetDisplayName(displayName string) (err error) {
 	return
 }
 
-// GetAvatarURL gets the avatar URL of the user with the specified MXID. See http://matrix.org/docs/spec/client_server/r0.6.1.html#get-matrix-client-r0-profile-userid-avatar-url
+// GetAvatarURL gets the avatar URL of the user with the specified MXID. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3profileuseridavatar_url
 func (cli *Client) GetAvatarURL(mxid id.UserID) (url id.ContentURI, err error) {
-	urlPath := cli.BuildURL("profile", cli.UserID, "avatar_url")
+	urlPath := cli.BuildClientURL("v3", "profile", mxid, "avatar_url")
 	s := struct {
 		AvatarURL id.ContentURI `json:"avatar_url"`
 	}{}
@@ -822,14 +906,14 @@ func (cli *Client) GetAvatarURL(mxid id.UserID) (url id.ContentURI, err error) {
 	return
 }
 
-// GetOwnAvatarURL gets the user's avatar URL. See http://matrix.org/docs/spec/client_server/r0.6.1.html#get-matrix-client-r0-profile-userid-avatar-url
+// GetOwnAvatarURL gets the user's avatar URL. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3profileuseridavatar_url
 func (cli *Client) GetOwnAvatarURL() (url id.ContentURI, err error) {
 	return cli.GetAvatarURL(cli.UserID)
 }
 
-// SetAvatarURL sets the user's avatar URL. See http://matrix.org/docs/spec/client_server/r0.6.1.html#put-matrix-client-r0-profile-userid-avatar-url
+// SetAvatarURL sets the user's avatar URL. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3profileuseridavatar_url
 func (cli *Client) SetAvatarURL(url id.ContentURI) (err error) {
-	urlPath := cli.BuildURL("profile", cli.UserID, "avatar_url")
+	urlPath := cli.BuildClientURL("v3", "profile", cli.UserID, "avatar_url")
 	s := struct {
 		AvatarURL string `json:"avatar_url"`
 	}{url.String()}
@@ -841,17 +925,24 @@ func (cli *Client) SetAvatarURL(url id.ContentURI) (err error) {
 	return nil
 }
 
-// GetAccountData gets the user's account data of this type. See https://matrix.org/docs/spec/client_server/r0.6.1#get-matrix-client-r0-user-userid-account-data-type
+// BeeperUpdateProfile sets custom fields in the user's profile.
+func (cli *Client) BeeperUpdateProfile(data map[string]any) (err error) {
+	urlPath := cli.BuildClientURL("v3", "profile", cli.UserID)
+	_, err = cli.MakeRequest("PATCH", urlPath, &data, nil)
+	return
+}
+
+// GetAccountData gets the user's account data of this type. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3useruseridaccount_datatype
 func (cli *Client) GetAccountData(name string, output interface{}) (err error) {
-	urlPath := cli.BuildURL("user", cli.UserID, "account_data", name)
+	urlPath := cli.BuildClientURL("v3", "user", cli.UserID, "account_data", name)
 	_, err = cli.MakeRequest("GET", urlPath, nil, output)
 	return
 }
 
-// SetAccountData sets the user's account data of this type. See https://matrix.org/docs/spec/client_server/r0.6.1#put-matrix-client-r0-user-userid-account-data-type
+// SetAccountData sets the user's account data of this type. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3useruseridaccount_datatype
 func (cli *Client) SetAccountData(name string, data interface{}) (err error) {
-	urlPath := cli.BuildURL("user", cli.UserID, "account_data", name)
-	_, err = cli.MakeRequest("PUT", urlPath, &data, nil)
+	urlPath := cli.BuildClientURL("v3", "user", cli.UserID, "account_data", name)
+	_, err = cli.MakeRequest("PUT", urlPath, data, nil)
 	if err != nil {
 		return err
 	}
@@ -859,15 +950,17 @@ func (cli *Client) SetAccountData(name string, data interface{}) (err error) {
 	return nil
 }
 
+// GetRoomAccountData gets the user's account data of this type in a specific room. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3useruseridaccount_datatype
 func (cli *Client) GetRoomAccountData(roomID id.RoomID, name string, output interface{}) (err error) {
-	urlPath := cli.BuildURL("user", cli.UserID, "rooms", roomID, "account_data", name)
+	urlPath := cli.BuildClientURL("v3", "user", cli.UserID, "rooms", roomID, "account_data", name)
 	_, err = cli.MakeRequest("GET", urlPath, nil, output)
 	return
 }
 
+// SetRoomAccountData sets the user's account data of this type in a specific room. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3useruseridroomsroomidaccount_datatype
 func (cli *Client) SetRoomAccountData(roomID id.RoomID, name string, data interface{}) (err error) {
-	urlPath := cli.BuildURL("user", cli.UserID, "rooms", roomID, "account_data", name)
-	_, err = cli.MakeRequest("PUT", urlPath, &data, nil)
+	urlPath := cli.BuildClientURL("v3", "user", cli.UserID, "rooms", roomID, "account_data", name)
+	_, err = cli.MakeRequest("PUT", urlPath, data, nil)
 	if err != nil {
 		return err
 	}
@@ -879,11 +972,12 @@ type ReqSendEvent struct {
 	Timestamp     int64
 	TransactionID string
 
-	ParentID string
-	RelType  event.RelationType
+	DontEncrypt bool
+
+	MeowEventID id.EventID
 }
 
-// SendMessageEvent sends a message event into a room. See http://matrix.org/docs/spec/client_server/r0.2.0.html#put-matrix-client-r0-rooms-roomid-send-eventtype-txnid
+// SendMessageEvent sends a message event into a room. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3roomsroomidsendeventtypetxnid
 // contentJSON should be a pointer to something that can be encoded as JSON using json.Marshal.
 func (cli *Client) SendMessageEvent(roomID id.RoomID, eventType event.Type, contentJSON interface{}, extra ...ReqSendEvent) (resp *RespSendEvent, err error) {
 	var req ReqSendEvent
@@ -902,37 +996,51 @@ func (cli *Client) SendMessageEvent(roomID id.RoomID, eventType event.Type, cont
 	if req.Timestamp > 0 {
 		queryParams["ts"] = strconv.FormatInt(req.Timestamp, 10)
 	}
-
-	urlData := URLPath{"rooms", roomID, "send", eventType.String(), txnID}
-	if len(req.ParentID) > 0 {
-		urlData = URLPath{"rooms", roomID, "send_relation", req.ParentID, req.RelType, eventType.String(), txnID}
+	if req.MeowEventID != "" {
+		queryParams["fi.mau.event_id"] = req.MeowEventID.String()
 	}
 
+	if !req.DontEncrypt && cli.Crypto != nil && eventType != event.EventReaction && eventType != event.EventEncrypted && cli.StateStore.IsEncrypted(roomID) {
+		contentJSON, err = cli.Crypto.Encrypt(roomID, eventType, contentJSON)
+		if err != nil {
+			err = fmt.Errorf("failed to encrypt event: %w", err)
+			return
+		}
+		eventType = event.EventEncrypted
+	}
+
+	urlData := ClientURLPath{"v3", "rooms", roomID, "send", eventType.String(), txnID}
 	urlPath := cli.BuildURLWithQuery(urlData, queryParams)
 	_, err = cli.MakeRequest("PUT", urlPath, contentJSON, &resp)
 	return
 }
 
-// SendStateEvent sends a state event into a room. See http://matrix.org/docs/spec/client_server/r0.2.0.html#put-matrix-client-r0-rooms-roomid-state-eventtype-statekey
+// SendStateEvent sends a state event into a room. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3roomsroomidstateeventtypestatekey
 // contentJSON should be a pointer to something that can be encoded as JSON using json.Marshal.
 func (cli *Client) SendStateEvent(roomID id.RoomID, eventType event.Type, stateKey string, contentJSON interface{}) (resp *RespSendEvent, err error) {
-	urlPath := cli.BuildURL("rooms", roomID, "state", eventType.String(), stateKey)
+	urlPath := cli.BuildClientURL("v3", "rooms", roomID, "state", eventType.String(), stateKey)
 	_, err = cli.MakeRequest("PUT", urlPath, contentJSON, &resp)
+	if err == nil && cli.StateStore != nil {
+		cli.updateStoreWithOutgoingEvent(roomID, eventType, stateKey, contentJSON)
+	}
 	return
 }
 
-// SendStateEvent sends a state event into a room. See http://matrix.org/docs/spec/client_server/r0.2.0.html#put-matrix-client-r0-rooms-roomid-state-eventtype-statekey
+// SendMassagedStateEvent sends a state event into a room with a custom timestamp. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3roomsroomidstateeventtypestatekey
 // contentJSON should be a pointer to something that can be encoded as JSON using json.Marshal.
 func (cli *Client) SendMassagedStateEvent(roomID id.RoomID, eventType event.Type, stateKey string, contentJSON interface{}, ts int64) (resp *RespSendEvent, err error) {
-	urlPath := cli.BuildURLWithQuery(URLPath{"rooms", roomID, "state", eventType.String(), stateKey}, map[string]string{
+	urlPath := cli.BuildURLWithQuery(ClientURLPath{"v3", "rooms", roomID, "state", eventType.String(), stateKey}, map[string]string{
 		"ts": strconv.FormatInt(ts, 10),
 	})
 	_, err = cli.MakeRequest("PUT", urlPath, contentJSON, &resp)
+	if err == nil && cli.StateStore != nil {
+		cli.updateStoreWithOutgoingEvent(roomID, eventType, stateKey, contentJSON)
+	}
 	return
 }
 
 // SendText sends an m.room.message event into the given room with a msgtype of m.text
-// See http://matrix.org/docs/spec/client_server/r0.2.0.html#m-text
+// See https://spec.matrix.org/v1.2/client-server-api/#mtext
 func (cli *Client) SendText(roomID id.RoomID, text string) (*RespSendEvent, error) {
 	return cli.SendMessageEvent(roomID, event.EventMessage, &event.MessageEventContent{
 		MsgType: event.MsgText,
@@ -940,28 +1048,8 @@ func (cli *Client) SendText(roomID id.RoomID, text string) (*RespSendEvent, erro
 	})
 }
 
-// SendImage sends an m.room.message event into the given room with a msgtype of m.image
-// See https://matrix.org/docs/spec/client_server/r0.2.0.html#m-image
-func (cli *Client) SendImage(roomID id.RoomID, body string, url id.ContentURI) (*RespSendEvent, error) {
-	return cli.SendMessageEvent(roomID, event.EventMessage, &event.MessageEventContent{
-		MsgType: event.MsgImage,
-		Body:    body,
-		URL:     url.CUString(),
-	})
-}
-
-// SendVideo sends an m.room.message event into the given room with a msgtype of m.video
-// See https://matrix.org/docs/spec/client_server/r0.2.0.html#m-video
-func (cli *Client) SendVideo(roomID id.RoomID, body string, url id.ContentURI) (*RespSendEvent, error) {
-	return cli.SendMessageEvent(roomID, event.EventMessage, &event.MessageEventContent{
-		MsgType: event.MsgVideo,
-		Body:    body,
-		URL:     url.CUString(),
-	})
-}
-
 // SendNotice sends an m.room.message event into the given room with a msgtype of m.notice
-// See http://matrix.org/docs/spec/client_server/r0.2.0.html#m-notice
+// See https://spec.matrix.org/v1.2/client-server-api/#mnotice
 func (cli *Client) SendNotice(roomID id.RoomID, text string) (*RespSendEvent, error) {
 	return cli.SendMessageEvent(roomID, event.EventMessage, &event.MessageEventContent{
 		MsgType: event.MsgNotice,
@@ -979,7 +1067,7 @@ func (cli *Client) SendReaction(roomID id.RoomID, eventID id.EventID, reaction s
 	})
 }
 
-// RedactEvent redacts the given event. See http://matrix.org/docs/spec/client_server/r0.2.0.html#put-matrix-client-r0-rooms-roomid-redact-eventid-txnid
+// RedactEvent redacts the given event. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3roomsroomidredacteventidtxnid
 func (cli *Client) RedactEvent(roomID id.RoomID, eventID id.EventID, extra ...ReqRedact) (resp *RespSendEvent, err error) {
 	req := ReqRedact{}
 	if len(extra) > 0 {
@@ -997,105 +1085,179 @@ func (cli *Client) RedactEvent(roomID id.RoomID, eventID id.EventID, extra ...Re
 	} else {
 		txnID = cli.TxnID()
 	}
-	urlPath := cli.BuildURL("rooms", roomID, "redact", eventID, txnID)
+	urlPath := cli.BuildClientURL("v3", "rooms", roomID, "redact", eventID, txnID)
 	_, err = cli.MakeRequest("PUT", urlPath, req.Extra, &resp)
 	return
 }
 
-// CreateRoom creates a new Matrix room. See https://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-createroom
-//  resp, err := cli.CreateRoom(&mautrix.ReqCreateRoom{
-//  	Preset: "public_chat",
-//  })
-//  fmt.Println("Room:", resp.RoomID)
+// CreateRoom creates a new Matrix room. See https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3createroom
+//
+//	resp, err := cli.CreateRoom(&mautrix.ReqCreateRoom{
+//		Preset: "public_chat",
+//	})
+//	fmt.Println("Room:", resp.RoomID)
 func (cli *Client) CreateRoom(req *ReqCreateRoom) (resp *RespCreateRoom, err error) {
-	urlPath := cli.BuildURL("createRoom")
+	urlPath := cli.BuildClientURL("v3", "createRoom")
 	_, err = cli.MakeRequest("POST", urlPath, req, &resp)
+	if err == nil && cli.StateStore != nil {
+		cli.StateStore.SetMembership(resp.RoomID, cli.UserID, event.MembershipJoin)
+		for _, evt := range req.InitialState {
+			UpdateStateStore(cli.StateStore, evt)
+		}
+		inviteMembership := event.MembershipInvite
+		if req.BeeperAutoJoinInvites {
+			inviteMembership = event.MembershipJoin
+		}
+		for _, invitee := range req.Invite {
+			cli.StateStore.SetMembership(resp.RoomID, invitee, inviteMembership)
+		}
+		for _, evt := range req.InitialState {
+			cli.updateStoreWithOutgoingEvent(resp.RoomID, evt.Type, evt.GetStateKey(), &evt.Content)
+		}
+	}
 	return
 }
 
-// LeaveRoom leaves the given room. See http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-leave
-func (cli *Client) LeaveRoom(roomID id.RoomID) (resp *RespLeaveRoom, err error) {
-	u := cli.BuildURL("rooms", roomID, "leave")
-	_, err = cli.MakeRequest("POST", u, struct{}{}, &resp)
+// LeaveRoom leaves the given room. See https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidleave
+func (cli *Client) LeaveRoom(roomID id.RoomID, optionalReq ...*ReqLeave) (resp *RespLeaveRoom, err error) {
+	req := &ReqLeave{}
+	if len(optionalReq) == 1 {
+		req = optionalReq[0]
+	} else if len(optionalReq) > 1 {
+		panic("invalid number of arguments to LeaveRoom")
+	}
+	u := cli.BuildClientURL("v3", "rooms", roomID, "leave")
+	_, err = cli.MakeRequest("POST", u, req, &resp)
+	if err == nil && cli.StateStore != nil {
+		cli.StateStore.SetMembership(roomID, cli.UserID, event.MembershipLeave)
+	}
 	return
 }
 
-// ForgetRoom forgets a room entirely. See http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-forget
+// ForgetRoom forgets a room entirely. See https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidforget
 func (cli *Client) ForgetRoom(roomID id.RoomID) (resp *RespForgetRoom, err error) {
-	u := cli.BuildURL("rooms", roomID, "forget")
+	u := cli.BuildClientURL("v3", "rooms", roomID, "forget")
 	_, err = cli.MakeRequest("POST", u, struct{}{}, &resp)
 	return
 }
 
-// InviteUser invites a user to a room. See http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-invite
+// InviteUser invites a user to a room. See https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidinvite
 func (cli *Client) InviteUser(roomID id.RoomID, req *ReqInviteUser) (resp *RespInviteUser, err error) {
-	u := cli.BuildURL("rooms", roomID, "invite")
+	u := cli.BuildClientURL("v3", "rooms", roomID, "invite")
 	_, err = cli.MakeRequest("POST", u, req, &resp)
+	if err == nil && cli.StateStore != nil {
+		cli.StateStore.SetMembership(roomID, req.UserID, event.MembershipInvite)
+	}
 	return
 }
 
-// InviteUserByThirdParty invites a third-party identifier to a room. See http://matrix.org/docs/spec/client_server/r0.2.0.html#invite-by-third-party-id-endpoint
+// InviteUserByThirdParty invites a third-party identifier to a room. See https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidinvite-1
 func (cli *Client) InviteUserByThirdParty(roomID id.RoomID, req *ReqInvite3PID) (resp *RespInviteUser, err error) {
-	u := cli.BuildURL("rooms", roomID, "invite")
+	u := cli.BuildClientURL("v3", "rooms", roomID, "invite")
 	_, err = cli.MakeRequest("POST", u, req, &resp)
 	return
 }
 
-// KickUser kicks a user from a room. See http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-kick
+// KickUser kicks a user from a room. See https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidkick
 func (cli *Client) KickUser(roomID id.RoomID, req *ReqKickUser) (resp *RespKickUser, err error) {
-	u := cli.BuildURL("rooms", roomID, "kick")
+	u := cli.BuildClientURL("v3", "rooms", roomID, "kick")
 	_, err = cli.MakeRequest("POST", u, req, &resp)
+	if err == nil && cli.StateStore != nil {
+		cli.StateStore.SetMembership(roomID, req.UserID, event.MembershipLeave)
+	}
 	return
 }
 
-// BanUser bans a user from a room. See http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-ban
+// BanUser bans a user from a room. See https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidban
 func (cli *Client) BanUser(roomID id.RoomID, req *ReqBanUser) (resp *RespBanUser, err error) {
-	u := cli.BuildURL("rooms", roomID, "ban")
+	u := cli.BuildClientURL("v3", "rooms", roomID, "ban")
 	_, err = cli.MakeRequest("POST", u, req, &resp)
+	if err == nil && cli.StateStore != nil {
+		cli.StateStore.SetMembership(roomID, req.UserID, event.MembershipBan)
+	}
 	return
 }
 
-// UnbanUser unbans a user from a room. See http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-unban
+// UnbanUser unbans a user from a room. See https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidunban
 func (cli *Client) UnbanUser(roomID id.RoomID, req *ReqUnbanUser) (resp *RespUnbanUser, err error) {
-	u := cli.BuildURL("rooms", roomID, "unban")
+	u := cli.BuildClientURL("v3", "rooms", roomID, "unban")
 	_, err = cli.MakeRequest("POST", u, req, &resp)
+	if err == nil && cli.StateStore != nil {
+		cli.StateStore.SetMembership(roomID, req.UserID, event.MembershipLeave)
+	}
 	return
 }
 
-// UserTyping sets the typing status of the user. See https://matrix.org/docs/spec/client_server/r0.2.0.html#put-matrix-client-r0-rooms-roomid-typing-userid
-func (cli *Client) UserTyping(roomID id.RoomID, typing bool, timeout int64) (resp *RespTyping, err error) {
-	req := ReqTyping{Typing: typing, Timeout: timeout}
-	u := cli.BuildURL("rooms", roomID, "typing", cli.UserID)
+// UserTyping sets the typing status of the user. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3roomsroomidtypinguserid
+func (cli *Client) UserTyping(roomID id.RoomID, typing bool, timeout time.Duration) (resp *RespTyping, err error) {
+	req := ReqTyping{Typing: typing, Timeout: timeout.Milliseconds()}
+	u := cli.BuildClientURL("v3", "rooms", roomID, "typing", cli.UserID)
 	_, err = cli.MakeRequest("PUT", u, req, &resp)
 	return
 }
 
-// GetPresence gets the presence of the user with the specified MXID. See https://matrix.org/docs/spec/client_server/r0.6.1#get-matrix-client-r0-presence-userid-status
+// GetPresence gets the presence of the user with the specified MXID. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3presenceuseridstatus
 func (cli *Client) GetPresence(userID id.UserID) (resp *RespPresence, err error) {
 	resp = new(RespPresence)
-	u := cli.BuildURL("presence", userID, "status")
+	u := cli.BuildClientURL("v3", "presence", userID, "status")
 	_, err = cli.MakeRequest("GET", u, nil, resp)
 	return
 }
 
-// GetOwnPresence gets the user's presence. See https://matrix.org/docs/spec/client_server/r0.6.1#get-matrix-client-r0-presence-userid-status
+// GetOwnPresence gets the user's presence. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3presenceuseridstatus
 func (cli *Client) GetOwnPresence() (resp *RespPresence, err error) {
 	return cli.GetPresence(cli.UserID)
 }
 
 func (cli *Client) SetPresence(status event.Presence) (err error) {
 	req := ReqPresence{Presence: status}
-	u := cli.BuildURL("presence", cli.UserID, "status")
+	u := cli.BuildClientURL("v3", "presence", cli.UserID, "status")
 	_, err = cli.MakeRequest("PUT", u, req, nil)
 	return
 }
 
+func (cli *Client) updateStoreWithOutgoingEvent(roomID id.RoomID, eventType event.Type, stateKey string, contentJSON interface{}) {
+	if cli.StateStore == nil {
+		return
+	}
+	fakeEvt := &event.Event{
+		StateKey: &stateKey,
+		Type:     eventType,
+		RoomID:   roomID,
+	}
+	var err error
+	fakeEvt.Content.VeryRaw, err = json.Marshal(contentJSON)
+	if err != nil {
+		cli.Log.Warn().Err(err).Msg("Failed to marshal state event content to update state store")
+		return
+	}
+	err = json.Unmarshal(fakeEvt.Content.VeryRaw, &fakeEvt.Content.Raw)
+	if err != nil {
+		cli.Log.Warn().Err(err).Msg("Failed to unmarshal state event content to update state store")
+		return
+	}
+	err = fakeEvt.Content.ParseRaw(fakeEvt.Type)
+	if err != nil {
+		switch fakeEvt.Type {
+		case event.StateMember, event.StatePowerLevels, event.StateEncryption:
+			cli.Log.Warn().Err(err).Msg("Failed to parse state event content to update state store")
+		default:
+			cli.Log.Debug().Err(err).Msg("Failed to parse state event content to update state store")
+		}
+		return
+	}
+	UpdateStateStore(cli.StateStore, fakeEvt)
+}
+
 // StateEvent gets a single state event in a room. It will attempt to JSON unmarshal into the given "outContent" struct with
 // the HTTP response body, or return an error.
-// See http://matrix.org/docs/spec/client_server/r0.2.0.html#get-matrix-client-r0-rooms-roomid-state-eventtype-statekey
+// See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3roomsroomidstateeventtypestatekey
 func (cli *Client) StateEvent(roomID id.RoomID, eventType event.Type, stateKey string, outContent interface{}) (err error) {
-	u := cli.BuildURL("rooms", roomID, "state", eventType.String(), stateKey)
+	u := cli.BuildClientURL("v3", "rooms", roomID, "state", eventType.String(), stateKey)
 	_, err = cli.MakeRequest("GET", u, nil, outContent)
+	if err == nil && cli.StateStore != nil {
+		cli.updateStoreWithOutgoingEvent(roomID, eventType, stateKey, outContent)
+	}
 	return
 }
 
@@ -1119,6 +1281,7 @@ func parseRoomStateArray(_ *http.Request, res *http.Response, responseJSON inter
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse state array item #%d: %v", i, err)
 		}
+		evt.Type.Class = event.StateEventType
 		_ = evt.Content.ParseRaw(evt.Type)
 		subMap, ok := response[evt.Type]
 		if !ok {
@@ -1138,14 +1301,29 @@ func parseRoomStateArray(_ *http.Request, res *http.Response, responseJSON inter
 }
 
 // State gets all state in a room.
-// See https://matrix.org/docs/spec/client_server/r0.6.1#get-matrix-client-r0-rooms-roomid-state
+// See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3roomsroomidstate
 func (cli *Client) State(roomID id.RoomID) (stateMap RoomStateMap, err error) {
 	_, err = cli.MakeFullRequest(FullRequest{
 		Method:       http.MethodGet,
-		URL:          cli.BuildURL("rooms", roomID, "state"),
+		URL:          cli.BuildClientURL("v3", "rooms", roomID, "state"),
 		ResponseJSON: &stateMap,
 		Handler:      parseRoomStateArray,
 	})
+	if err == nil && cli.StateStore != nil {
+		cli.StateStore.ClearCachedMembers(roomID)
+		for _, evts := range stateMap {
+			for _, evt := range evts {
+				UpdateStateStore(cli.StateStore, evt)
+			}
+		}
+	}
+	return
+}
+
+// GetMediaConfig fetches the configuration of the content repository, such as upload limitations.
+func (cli *Client) GetMediaConfig() (resp *RespMediaConfig, err error) {
+	u := cli.BuildURL(MediaURLPath{"v3", "config"})
+	_, err = cli.MakeRequest("GET", u, nil, &resp)
 	return
 }
 
@@ -1162,24 +1340,136 @@ func (cli *Client) UploadLink(link string) (*RespMediaUpload, error) {
 }
 
 func (cli *Client) GetDownloadURL(mxcURL id.ContentURI) string {
-	return cli.BuildBaseURL("_matrix", "media", "r0", "download", mxcURL.Homeserver, mxcURL.FileID)
+	return cli.BuildURLWithQuery(MediaURLPath{"v3", "download", mxcURL.Homeserver, mxcURL.FileID}, map[string]string{"allow_redirect": "true"})
 }
 
 func (cli *Client) Download(mxcURL id.ContentURI) (io.ReadCloser, error) {
-	resp, err := cli.Client.Get(cli.GetDownloadURL(mxcURL))
+	return cli.DownloadContext(context.Background(), mxcURL)
+}
+
+func (cli *Client) DownloadContext(ctx context.Context, mxcURL id.ContentURI) (io.ReadCloser, error) {
+	resp, err := cli.downloadContext(ctx, mxcURL)
 	if err != nil {
 		return nil, err
 	}
 	return resp.Body, nil
 }
 
-func (cli *Client) DownloadBytes(mxcURL id.ContentURI) ([]byte, error) {
-	resp, err := cli.Download(mxcURL)
+func (cli *Client) doMediaRetry(req *http.Request, cause error, retries int, backoff time.Duration) (*http.Response, error) {
+	log := zerolog.Ctx(req.Context())
+	if req.Body != nil {
+		if req.GetBody == nil {
+			log.Warn().Msg("Failed to get new body to retry request: GetBody is nil")
+			return nil, cause
+		}
+		var err error
+		req.Body, err = req.GetBody()
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to get new body to retry request")
+			return nil, cause
+		}
+	}
+	log.Warn().Err(cause).
+		Int("retry_in_seconds", int(backoff.Seconds())).
+		Msg("Request failed, retrying")
+	time.Sleep(backoff)
+	return cli.doMediaRequest(req, retries-1, backoff*2)
+}
+
+func (cli *Client) doMediaRequest(req *http.Request, retries int, backoff time.Duration) (*http.Response, error) {
+	cli.RequestStart(req)
+	startTime := time.Now()
+	res, err := cli.Client.Do(req)
+	duration := time.Now().Sub(startTime)
+	if err != nil {
+		if retries > 0 {
+			return cli.doMediaRetry(req, err, retries, backoff)
+		}
+		err = HTTPError{
+			Request:  req,
+			Response: res,
+
+			Message:      "request error",
+			WrappedError: err,
+		}
+		cli.LogRequestDone(req, res, err, nil, 0, duration)
+		return nil, err
+	}
+
+	if retries > 0 && retryafter.Should(res.StatusCode, !cli.IgnoreRateLimit) {
+		backoff = retryafter.Parse(res.Header.Get("Retry-After"), backoff)
+		return cli.doMediaRetry(req, fmt.Errorf("HTTP %d", res.StatusCode), retries, backoff)
+	}
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		var body []byte
+		body, err = ParseErrorResponse(req, res)
+		cli.LogRequestDone(req, res, err, nil, len(body), duration)
+	} else {
+		cli.LogRequestDone(req, res, nil, nil, -1, duration)
+	}
+	return res, err
+}
+
+func (cli *Client) downloadContext(ctx context.Context, mxcURL id.ContentURI) (*http.Response, error) {
+	ctxLog := zerolog.Ctx(ctx)
+	if ctxLog.GetLevel() == zerolog.Disabled || ctxLog == zerolog.DefaultContextLogger {
+		ctx = cli.Log.WithContext(ctx)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cli.GetDownloadURL(mxcURL), nil)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Close()
-	return ioutil.ReadAll(resp)
+	req.Header.Set("User-Agent", cli.UserAgent+" (media downloader)")
+	return cli.doMediaRequest(req, cli.DefaultHTTPRetries, 4*time.Second)
+}
+
+func (cli *Client) DownloadBytes(mxcURL id.ContentURI) ([]byte, error) {
+	return cli.DownloadBytesContext(context.Background(), mxcURL)
+}
+
+func (cli *Client) DownloadBytesContext(ctx context.Context, mxcURL id.ContentURI) ([]byte, error) {
+	resp, err := cli.downloadContext(ctx, mxcURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+// CreateMXC creates a blank Matrix content URI to allow uploading the content asynchronously later.
+//
+// See https://spec.matrix.org/v1.7/client-server-api/#post_matrixmediav1create
+func (cli *Client) CreateMXC() (*RespCreateMXC, error) {
+	u, _ := url.Parse(cli.BuildURL(MediaURLPath{"v1", "create"}))
+	var m RespCreateMXC
+	_, err := cli.MakeFullRequest(FullRequest{
+		Method:       http.MethodPost,
+		URL:          u.String(),
+		ResponseJSON: &m,
+	})
+	return &m, err
+}
+
+// UploadAsync creates a blank content URI with CreateMXC, starts uploading the data in the background
+// and returns the created MXC immediately.
+//
+// See https://spec.matrix.org/v1.7/client-server-api/#post_matrixmediav1create
+// and https://spec.matrix.org/v1.7/client-server-api/#put_matrixmediav3uploadservernamemediaid
+func (cli *Client) UploadAsync(req ReqUploadMedia) (*RespCreateMXC, error) {
+	resp, err := cli.CreateMXC()
+	if err != nil {
+		return nil, err
+	}
+	req.MXC = resp.ContentURI
+	req.UnstableUploadURL = resp.UnstableUploadURL
+	go func() {
+		_, err = cli.UploadMedia(req)
+		if err != nil {
+			cli.Log.Error().Str("mxc", req.MXC.String()).Err(err).Msg("Async upload of media failed")
+		}
+	}()
+	return resp, nil
 }
 
 func (cli *Client) UploadBytes(data []byte, contentType string) (*RespMediaUpload, error) {
@@ -1188,10 +1478,9 @@ func (cli *Client) UploadBytes(data []byte, contentType string) (*RespMediaUploa
 
 func (cli *Client) UploadBytesWithName(data []byte, contentType, fileName string) (*RespMediaUpload, error) {
 	return cli.UploadMedia(ReqUploadMedia{
-		Content:       bytes.NewReader(data),
-		ContentLength: int64(len(data)),
-		ContentType:   contentType,
-		FileName:      fileName,
+		ContentBytes: data,
+		ContentType:  contentType,
+		FileName:     fileName,
 	})
 }
 
@@ -1207,16 +1496,99 @@ func (cli *Client) Upload(content io.Reader, contentType string, contentLength i
 }
 
 type ReqUploadMedia struct {
+	ContentBytes  []byte
 	Content       io.Reader
 	ContentLength int64
 	ContentType   string
 	FileName      string
+
+	// MXC specifies an existing MXC URI which doesn't have content yet to upload into.
+	// See https://spec.matrix.org/unstable/client-server-api/#put_matrixmediav3uploadservernamemediaid
+	MXC id.ContentURI
+
+	// UnstableUploadURL specifies the URL to upload the content to. MXC must also be set.
+	// see https://github.com/matrix-org/matrix-spec-proposals/pull/3870 for more info
+	UnstableUploadURL string
+}
+
+func (cli *Client) tryUploadMediaToURL(url, contentType string, content io.Reader) (*http.Response, error) {
+	cli.Log.Debug().Str("url", url).Msg("Uploading media to external URL")
+	req, err := http.NewRequest(http.MethodPut, url, content)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("User-Agent", cli.UserAgent+" (external media uploader)")
+
+	return http.DefaultClient.Do(req)
+}
+
+func (cli *Client) uploadMediaToURL(data ReqUploadMedia) (*RespMediaUpload, error) {
+	retries := cli.DefaultHTTPRetries
+	if data.ContentBytes == nil {
+		// Can't retry with a reader
+		retries = 0
+	}
+	for {
+		reader := data.Content
+		if reader == nil {
+			reader = bytes.NewReader(data.ContentBytes)
+		} else {
+			data.Content = nil
+		}
+		resp, err := cli.tryUploadMediaToURL(data.UnstableUploadURL, data.ContentType, reader)
+		if err == nil {
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				// Everything is fine
+				break
+			}
+			err = fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
+		if retries <= 0 {
+			cli.Log.Warn().Str("url", data.UnstableUploadURL).Err(err).
+				Msg("Error uploading media to external URL, not retrying")
+			return nil, err
+		}
+		cli.Log.Warn().Str("url", data.UnstableUploadURL).Err(err).
+			Msg("Error uploading media to external URL, retrying")
+		retries--
+	}
+
+	query := map[string]string{}
+	if len(data.FileName) > 0 {
+		query["filename"] = data.FileName
+	}
+
+	notifyURL := cli.BuildURLWithQuery(MediaURLPath{"unstable", "com.beeper.msc3870", "upload", data.MXC.Homeserver, data.MXC.FileID, "complete"}, query)
+
+	var m *RespMediaUpload
+	_, err := cli.MakeFullRequest(FullRequest{
+		Method:       http.MethodPost,
+		URL:          notifyURL,
+		ResponseJSON: m,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return m, nil
 }
 
 // UploadMedia uploads the given data to the content repository and returns an MXC URI.
-// See http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-media-r0-upload
+// See https://spec.matrix.org/v1.7/client-server-api/#post_matrixmediav3upload
 func (cli *Client) UploadMedia(data ReqUploadMedia) (*RespMediaUpload, error) {
-	u, _ := url.Parse(cli.BuildBaseURL("_matrix", "media", "r0", "upload"))
+	if data.UnstableUploadURL != "" {
+		if data.MXC.IsEmpty() {
+			return nil, errors.New("MXC must also be set when uploading to external URL")
+		}
+		return cli.uploadMediaToURL(data)
+	}
+	u, _ := url.Parse(cli.BuildURL(MediaURLPath{"v3", "upload"}))
+	method := http.MethodPost
+	if !data.MXC.IsEmpty() {
+		u, _ = url.Parse(cli.BuildURL(MediaURLPath{"v3", "upload", data.MXC.Homeserver, data.MXC.FileID}))
+		method = http.MethodPut
+	}
 	if len(data.FileName) > 0 {
 		q := u.Query()
 		q.Set("filename", data.FileName)
@@ -1230,9 +1602,10 @@ func (cli *Client) UploadMedia(data ReqUploadMedia) (*RespMediaUpload, error) {
 
 	var m RespMediaUpload
 	_, err := cli.MakeFullRequest(FullRequest{
-		Method:        http.MethodPost,
+		Method:        method,
 		URL:           u.String(),
 		Headers:       headers,
+		RequestBytes:  data.ContentBytes,
 		RequestBody:   data.Content,
 		RequestLength: data.ContentLength,
 		ResponseJSON:  &m,
@@ -1240,13 +1613,35 @@ func (cli *Client) UploadMedia(data ReqUploadMedia) (*RespMediaUpload, error) {
 	return &m, err
 }
 
-// JoinedMembers returns a map of joined room members. See https://matrix.org/docs/spec/client_server/r0.4.0.html#get-matrix-client-r0-joined-rooms
+// GetURLPreview asks the homeserver to fetch a preview for a given URL.
+//
+// See https://spec.matrix.org/v1.2/client-server-api/#get_matrixmediav3preview_url
+func (cli *Client) GetURLPreview(url string) (*RespPreviewURL, error) {
+	reqURL := cli.BuildURLWithQuery(MediaURLPath{"v3", "preview_url"}, map[string]string{
+		"url": url,
+	})
+	var output RespPreviewURL
+	_, err := cli.MakeRequest(http.MethodGet, reqURL, nil, &output)
+	return &output, err
+}
+
+// JoinedMembers returns a map of joined room members. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3roomsroomidjoined_members
 //
 // In general, usage of this API is discouraged in favour of /sync, as calling this API can race with incoming membership changes.
 // This API is primarily designed for application services which may want to efficiently look up joined members in a room.
 func (cli *Client) JoinedMembers(roomID id.RoomID) (resp *RespJoinedMembers, err error) {
-	u := cli.BuildURL("rooms", roomID, "joined_members")
+	u := cli.BuildClientURL("v3", "rooms", roomID, "joined_members")
 	_, err = cli.MakeRequest("GET", u, nil, &resp)
+	if err == nil && cli.StateStore != nil {
+		cli.StateStore.ClearCachedMembers(roomID, event.MembershipJoin)
+		for userID, member := range resp.Joined {
+			cli.StateStore.SetMember(roomID, userID, &event.MemberEventContent{
+				Membership:  event.MembershipJoin,
+				AvatarURL:   id.ContentURIString(member.AvatarURL),
+				Displayname: member.DisplayName,
+			})
+		}
+	}
 	return
 }
 
@@ -1265,25 +1660,49 @@ func (cli *Client) Members(roomID id.RoomID, req ...ReqMembers) (resp *RespMembe
 	if len(extra.NotMembership) > 0 {
 		query["not_membership"] = string(extra.NotMembership)
 	}
-	u := cli.BuildURLWithQuery(URLPath{"rooms", roomID, "members"}, query)
+	u := cli.BuildURLWithQuery(ClientURLPath{"v3", "rooms", roomID, "members"}, query)
 	_, err = cli.MakeRequest("GET", u, nil, &resp)
+	if err == nil && cli.StateStore != nil {
+		var clearMemberships []event.Membership
+		if extra.Membership != "" {
+			clearMemberships = append(clearMemberships, extra.Membership)
+		}
+		if extra.NotMembership == "" {
+			cli.StateStore.ClearCachedMembers(roomID, clearMemberships...)
+		}
+		for _, evt := range resp.Chunk {
+			UpdateStateStore(cli.StateStore, evt)
+		}
+	}
 	return
 }
 
-// JoinedRooms returns a list of rooms which the client is joined to. See https://matrix.org/docs/spec/client_server/r0.4.0.html#get-matrix-client-r0-joined-rooms
+// JoinedRooms returns a list of rooms which the client is joined to. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3joined_rooms
 //
 // In general, usage of this API is discouraged in favour of /sync, as calling this API can race with incoming membership changes.
 // This API is primarily designed for application services which may want to efficiently look up joined rooms.
 func (cli *Client) JoinedRooms() (resp *RespJoinedRooms, err error) {
-	u := cli.BuildURL("joined_rooms")
+	u := cli.BuildClientURL("v3", "joined_rooms")
 	_, err = cli.MakeRequest("GET", u, nil, &resp)
+	return
+}
+
+// Hierarchy returns a list of rooms that are in the room's hierarchy. See https://spec.matrix.org/v1.4/client-server-api/#get_matrixclientv1roomsroomidhierarchy
+//
+// The hierarchy API is provided to walk the space tree and discover the rooms with their aesthetic details. works in a depth-first manner:
+// when it encounters another space as a child it recurses into that space before returning non-space children.
+//
+// The second function parameter specifies query parameters to limit the response. No query parameters will be added if it's nil.
+func (cli *Client) Hierarchy(roomID id.RoomID, req *ReqHierarchy) (resp *RespHierarchy, err error) {
+	urlPath := cli.BuildURLWithQuery(ClientURLPath{"v1", "rooms", roomID, "hierarchy"}, req.Query())
+	_, err = cli.MakeRequest(http.MethodGet, urlPath, nil, &resp)
 	return
 }
 
 // Messages returns a list of message and state events for a room. It uses
 // pagination query parameters to paginate history in the room.
-// See https://matrix.org/docs/spec/client_server/r0.2.0.html#get-matrix-client-r0-rooms-roomid-messages
-func (cli *Client) Messages(roomID id.RoomID, from, to string, dir rune, filter *FilterPart, limit int) (resp *RespMessages, err error) {
+// See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3roomsroomidmessages
+func (cli *Client) Messages(roomID id.RoomID, from, to string, dir Direction, filter *FilterPart, limit int) (resp *RespMessages, err error) {
 	query := map[string]string{
 		"from": from,
 		"dir":  string(dir),
@@ -1302,15 +1721,28 @@ func (cli *Client) Messages(roomID id.RoomID, from, to string, dir rune, filter 
 		query["limit"] = strconv.Itoa(limit)
 	}
 
-	urlPath := cli.BuildURLWithQuery(URLPath{"rooms", roomID, "messages"}, query)
+	urlPath := cli.BuildURLWithQuery(ClientURLPath{"v3", "rooms", roomID, "messages"}, query)
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
+	return
+}
+
+// TimestampToEvent finds the ID of the event closest to the given timestamp.
+//
+// See https://spec.matrix.org/v1.6/client-server-api/#get_matrixclientv1roomsroomidtimestamp_to_event
+func (cli *Client) TimestampToEvent(roomID id.RoomID, timestamp time.Time, dir Direction) (resp *RespTimestampToEvent, err error) {
+	query := map[string]string{
+		"ts":  strconv.FormatInt(timestamp.UnixMilli(), 10),
+		"dir": string(dir),
+	}
+	urlPath := cli.BuildURLWithQuery(ClientURLPath{"v1", "rooms", roomID, "timestamp_to_event"}, query)
+	_, err = cli.MakeRequest(http.MethodGet, urlPath, nil, &resp)
 	return
 }
 
 // Context returns a number of events that happened just before and after the
 // specified event. It use pagination query parameters to paginate history in
 // the room.
-// See https://spec.matrix.org/v1.1/client-server-api/#get_matrixclientv3roomsroomidcontexteventid
+// See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3roomsroomidcontexteventid
 func (cli *Client) Context(roomID id.RoomID, eventID id.EventID, filter *FilterPart, limit int) (resp *RespContext, err error) {
 	query := map[string]string{}
 	if filter != nil {
@@ -1324,26 +1756,41 @@ func (cli *Client) Context(roomID id.RoomID, eventID id.EventID, filter *FilterP
 		query["limit"] = strconv.Itoa(limit)
 	}
 
-	urlPath := cli.BuildURLWithQuery(URLPath{"rooms", roomID, "context", eventID}, query)
+	urlPath := cli.BuildURLWithQuery(ClientURLPath{"v3", "rooms", roomID, "context", eventID}, query)
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
 	return
 }
 
 func (cli *Client) GetEvent(roomID id.RoomID, eventID id.EventID) (resp *event.Event, err error) {
-	urlPath := cli.BuildURL("rooms", roomID, "event", eventID)
+	urlPath := cli.BuildClientURL("v3", "rooms", roomID, "event", eventID)
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
 	return
 }
 
 func (cli *Client) MarkRead(roomID id.RoomID, eventID id.EventID) (err error) {
-	return cli.MarkReadWithContent(roomID, eventID, struct{}{})
+	return cli.SendReceipt(roomID, eventID, event.ReceiptTypeRead, nil)
 }
 
 // MarkReadWithContent sends a read receipt including custom data.
-// N.B. This is not (yet) a part of the spec, normal servers will drop any extra content.
+//
+// Deprecated: Use SendReceipt instead.
 func (cli *Client) MarkReadWithContent(roomID id.RoomID, eventID id.EventID, content interface{}) (err error) {
-	urlPath := cli.BuildURL("rooms", roomID, "receipt", "m.read", eventID)
-	_, err = cli.MakeRequest("POST", urlPath, &content, nil)
+	return cli.SendReceipt(roomID, eventID, event.ReceiptTypeRead, content)
+}
+
+// SendReceipt sends a receipt, usually specifically a read receipt.
+//
+// Passing nil as the content is safe, the library will automatically replace it with an empty JSON object.
+// To mark a message in a specific thread as read, use pass a ReqSendReceipt as the content.
+func (cli *Client) SendReceipt(roomID id.RoomID, eventID id.EventID, receiptType event.ReceiptType, content interface{}) (err error) {
+	urlPath := cli.BuildClientURL("v3", "rooms", roomID, "receipt", receiptType, eventID)
+	_, err = cli.MakeRequest("POST", urlPath, content, nil)
+	return
+}
+
+func (cli *Client) SetReadMarkers(roomID id.RoomID, content interface{}) (err error) {
+	urlPath := cli.BuildClientURL("v3", "rooms", roomID, "read_markers")
+	_, err = cli.MakeRequest("POST", urlPath, content, nil)
 	return
 }
 
@@ -1356,7 +1803,7 @@ func (cli *Client) AddTag(roomID id.RoomID, tag string, order float64) error {
 }
 
 func (cli *Client) AddTagWithCustomData(roomID id.RoomID, tag string, data interface{}) (err error) {
-	urlPath := cli.BuildURL("user", cli.UserID, "rooms", roomID, "tags", tag)
+	urlPath := cli.BuildClientURL("v3", "user", cli.UserID, "rooms", roomID, "tags", tag)
 	_, err = cli.MakeRequest("PUT", urlPath, data, nil)
 	return
 }
@@ -1367,13 +1814,13 @@ func (cli *Client) GetTags(roomID id.RoomID) (tags event.TagEventContent, err er
 }
 
 func (cli *Client) GetTagsWithCustomData(roomID id.RoomID, resp interface{}) (err error) {
-	urlPath := cli.BuildURL("user", cli.UserID, "rooms", roomID, "tags")
+	urlPath := cli.BuildClientURL("v3", "user", cli.UserID, "rooms", roomID, "tags")
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
 	return
 }
 
 func (cli *Client) RemoveTag(roomID id.RoomID, tag string) (err error) {
-	urlPath := cli.BuildURL("user", cli.UserID, "rooms", roomID, "tags", tag)
+	urlPath := cli.BuildClientURL("v3", "user", cli.UserID, "rooms", roomID, "tags", tag)
 	_, err = cli.MakeRequest("DELETE", urlPath, nil, nil)
 	return
 }
@@ -1386,51 +1833,57 @@ func (cli *Client) SetTags(roomID id.RoomID, tags event.Tags) (err error) {
 }
 
 // TurnServer returns turn server details and credentials for the client to use when initiating calls.
-// See http://matrix.org/docs/spec/client_server/r0.2.0.html#get-matrix-client-r0-voip-turnserver
+// See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3voipturnserver
 func (cli *Client) TurnServer() (resp *RespTurnServer, err error) {
-	urlPath := cli.BuildURL("voip", "turnServer")
+	urlPath := cli.BuildClientURL("v3", "voip", "turnServer")
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
 	return
 }
 
 func (cli *Client) CreateAlias(alias id.RoomAlias, roomID id.RoomID) (resp *RespAliasCreate, err error) {
-	urlPath := cli.BuildURL("directory", "room", alias)
+	urlPath := cli.BuildClientURL("v3", "directory", "room", alias)
 	_, err = cli.MakeRequest("PUT", urlPath, &ReqAliasCreate{RoomID: roomID}, &resp)
 	return
 }
 
 func (cli *Client) ResolveAlias(alias id.RoomAlias) (resp *RespAliasResolve, err error) {
-	urlPath := cli.BuildURL("directory", "room", alias)
+	urlPath := cli.BuildClientURL("v3", "directory", "room", alias)
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
 	return
 }
 
 func (cli *Client) DeleteAlias(alias id.RoomAlias) (resp *RespAliasDelete, err error) {
-	urlPath := cli.BuildURL("directory", "room", alias)
+	urlPath := cli.BuildClientURL("v3", "directory", "room", alias)
 	_, err = cli.MakeRequest("DELETE", urlPath, nil, &resp)
 	return
 }
 
+func (cli *Client) GetAliases(roomID id.RoomID) (resp *RespAliasList, err error) {
+	urlPath := cli.BuildClientURL("v3", "rooms", roomID, "aliases")
+	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
+	return
+}
+
 func (cli *Client) UploadKeys(req *ReqUploadKeys) (resp *RespUploadKeys, err error) {
-	urlPath := cli.BuildURL("keys", "upload")
+	urlPath := cli.BuildClientURL("v3", "keys", "upload")
 	_, err = cli.MakeRequest("POST", urlPath, req, &resp)
 	return
 }
 
 func (cli *Client) QueryKeys(req *ReqQueryKeys) (resp *RespQueryKeys, err error) {
-	urlPath := cli.BuildURL("keys", "query")
+	urlPath := cli.BuildClientURL("v3", "keys", "query")
 	_, err = cli.MakeRequest("POST", urlPath, req, &resp)
 	return
 }
 
 func (cli *Client) ClaimKeys(req *ReqClaimKeys) (resp *RespClaimKeys, err error) {
-	urlPath := cli.BuildURL("keys", "claim")
+	urlPath := cli.BuildClientURL("v3", "keys", "claim")
 	_, err = cli.MakeRequest("POST", urlPath, req, &resp)
 	return
 }
 
 func (cli *Client) GetKeyChanges(from, to string) (resp *RespKeyChanges, err error) {
-	urlPath := cli.BuildURLWithQuery(URLPath{"keys", "changes"}, map[string]string{
+	urlPath := cli.BuildURLWithQuery(ClientURLPath{"v3", "keys", "changes"}, map[string]string{
 		"from": from,
 		"to":   to,
 	})
@@ -1439,37 +1892,37 @@ func (cli *Client) GetKeyChanges(from, to string) (resp *RespKeyChanges, err err
 }
 
 func (cli *Client) SendToDevice(eventType event.Type, req *ReqSendToDevice) (resp *RespSendToDevice, err error) {
-	urlPath := cli.BuildURL("sendToDevice", eventType.String(), cli.TxnID())
+	urlPath := cli.BuildClientURL("v3", "sendToDevice", eventType.String(), cli.TxnID())
 	_, err = cli.MakeRequest("PUT", urlPath, req, &resp)
 	return
 }
 
 func (cli *Client) GetDevicesInfo() (resp *RespDevicesInfo, err error) {
-	urlPath := cli.BuildURL("devices")
+	urlPath := cli.BuildClientURL("v3", "devices")
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
 	return
 }
 
 func (cli *Client) GetDeviceInfo(deviceID id.DeviceID) (resp *RespDeviceInfo, err error) {
-	urlPath := cli.BuildURL("devices", deviceID)
+	urlPath := cli.BuildClientURL("v3", "devices", deviceID)
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
 	return
 }
 
 func (cli *Client) SetDeviceInfo(deviceID id.DeviceID, req *ReqDeviceInfo) error {
-	urlPath := cli.BuildURL("devices", deviceID)
+	urlPath := cli.BuildClientURL("v3", "devices", deviceID)
 	_, err := cli.MakeRequest("PUT", urlPath, req, nil)
 	return err
 }
 
 func (cli *Client) DeleteDevice(deviceID id.DeviceID, req *ReqDeleteDevice) error {
-	urlPath := cli.BuildURL("devices", deviceID)
+	urlPath := cli.BuildClientURL("v3", "devices", deviceID)
 	_, err := cli.MakeRequest("DELETE", urlPath, req, nil)
 	return err
 }
 
 func (cli *Client) DeleteDevices(req *ReqDeleteDevices) error {
-	urlPath := cli.BuildURL("delete_devices")
+	urlPath := cli.BuildClientURL("v3", "delete_devices")
 	_, err := cli.MakeRequest("DELETE", urlPath, req, nil)
 	return err
 }
@@ -1482,7 +1935,7 @@ type UIACallback = func(*RespUserInteractive) interface{}
 func (cli *Client) UploadCrossSigningKeys(keys *UploadCrossSigningKeysReq, uiaCallback UIACallback) error {
 	content, err := cli.MakeFullRequest(FullRequest{
 		Method:           http.MethodPost,
-		URL:              cli.BuildBaseURL("_matrix", "client", "unstable", "keys", "device_signing", "upload"),
+		URL:              cli.BuildClientURL("v3", "keys", "device_signing", "upload"),
 		RequestJSON:      keys,
 		SensitiveContent: keys.Auth != nil,
 	})
@@ -1502,7 +1955,7 @@ func (cli *Client) UploadCrossSigningKeys(keys *UploadCrossSigningKeysReq, uiaCa
 }
 
 func (cli *Client) UploadSignatures(req *ReqUploadSignatures) (resp *RespUploadSignatures, err error) {
-	urlPath := cli.BuildBaseURL("_matrix", "client", "unstable", "keys", "signatures", "upload")
+	urlPath := cli.BuildClientURL("v3", "keys", "signatures", "upload")
 	_, err = cli.MakeRequest("POST", urlPath, req, &resp)
 	return
 }
@@ -1514,7 +1967,7 @@ func (cli *Client) GetPushRules() (*pushrules.PushRuleset, error) {
 
 // GetScopedPushRules returns the push notification rules for the given scope.
 func (cli *Client) GetScopedPushRules(scope string) (resp *pushrules.PushRuleset, err error) {
-	u, _ := url.Parse(cli.BuildURL("pushrules", scope))
+	u, _ := url.Parse(cli.BuildClientURL("v3", "pushrules", scope))
 	// client.BuildURL returns the URL without a trailing slash, but the pushrules endpoint requires the slash.
 	u.Path += "/"
 	_, err = cli.MakeRequest("GET", u.String(), nil, &resp)
@@ -1522,7 +1975,7 @@ func (cli *Client) GetScopedPushRules(scope string) (resp *pushrules.PushRuleset
 }
 
 func (cli *Client) GetPushRule(scope string, kind pushrules.PushRuleType, ruleID string) (resp *pushrules.PushRule, err error) {
-	urlPath := cli.BuildURL("pushrules", scope, kind, ruleID)
+	urlPath := cli.BuildClientURL("v3", "pushrules", scope, kind, ruleID)
 	_, err = cli.MakeRequest("GET", urlPath, nil, &resp)
 	if resp != nil {
 		resp.Type = kind
@@ -1531,7 +1984,7 @@ func (cli *Client) GetPushRule(scope string, kind pushrules.PushRuleType, ruleID
 }
 
 func (cli *Client) DeletePushRule(scope string, kind pushrules.PushRuleType, ruleID string) error {
-	urlPath := cli.BuildURL("pushrules", scope, kind, ruleID)
+	urlPath := cli.BuildClientURL("v3", "pushrules", scope, kind, ruleID)
 	_, err := cli.MakeRequest("DELETE", urlPath, nil, nil)
 	return err
 }
@@ -1544,23 +1997,65 @@ func (cli *Client) PutPushRule(scope string, kind pushrules.PushRuleType, ruleID
 	if len(req.Before) > 0 {
 		query["before"] = req.Before
 	}
-	urlPath := cli.BuildURLWithQuery(URLPath{"pushrules", scope, kind, ruleID}, query)
+	urlPath := cli.BuildURLWithQuery(ClientURLPath{"v3", "pushrules", scope, kind, ruleID}, query)
 	_, err := cli.MakeRequest("PUT", urlPath, req, nil)
 	return err
 }
 
 // BatchSend sends a batch of historical events into a room. This is only available for appservices.
 //
-// See https://github.com/matrix-org/matrix-doc/pull/2716 for more info.
+// Deprecated: MSC2716 has been abandoned, so this is now Beeper-specific. BeeperBatchSend should be used instead.
 func (cli *Client) BatchSend(roomID id.RoomID, req *ReqBatchSend) (resp *RespBatchSend, err error) {
-	path := URLPath{"_matrix", "client", "unstable", "org.matrix.msc2716", "rooms", roomID, "batch_send"}
+	path := ClientURLPath{"unstable", "org.matrix.msc2716", "rooms", roomID, "batch_send"}
 	query := map[string]string{
 		"prev_event_id": req.PrevEventID.String(),
+	}
+	if req.BeeperNewMessages {
+		query["com.beeper.new_messages"] = "true"
+	}
+	if req.BeeperMarkReadBy != "" {
+		query["com.beeper.mark_read_by"] = req.BeeperMarkReadBy.String()
 	}
 	if len(req.BatchID) > 0 {
 		query["batch_id"] = req.BatchID.String()
 	}
-	_, err = cli.MakeRequest("POST", cli.BuildBaseURLWithQuery(path, query), req, &resp)
+	_, err = cli.MakeRequest("POST", cli.BuildURLWithQuery(path, query), req, &resp)
+	return
+}
+
+func (cli *Client) AppservicePing(id, txnID string) (resp *RespAppservicePing, err error) {
+	_, err = cli.MakeFullRequest(FullRequest{
+		Method:       http.MethodPost,
+		URL:          cli.BuildClientURL("v1", "appservice", id, "ping"),
+		RequestJSON:  &ReqAppservicePing{TxnID: txnID},
+		ResponseJSON: &resp,
+		// This endpoint intentionally returns 50x, so don't retry
+		MaxAttempts: 1,
+	})
+	return
+}
+
+func (cli *Client) BeeperBatchSend(roomID id.RoomID, req *ReqBeeperBatchSend) (resp *RespBeeperBatchSend, err error) {
+	u := cli.BuildClientURL("unstable", "com.beeper.backfill", "rooms", roomID, "batch_send")
+	_, err = cli.MakeRequest(http.MethodPost, u, req, &resp)
+	return
+}
+
+func (cli *Client) BeeperMergeRooms(req *ReqBeeperMergeRoom) (resp *RespBeeperMergeRoom, err error) {
+	urlPath := cli.BuildClientURL("unstable", "com.beeper.chatmerging", "merge")
+	_, err = cli.MakeRequest(http.MethodPost, urlPath, req, &resp)
+	return
+}
+
+func (cli *Client) BeeperSplitRoom(req *ReqBeeperSplitRoom) (resp *RespBeeperSplitRoom, err error) {
+	urlPath := cli.BuildClientURL("unstable", "com.beeper.chatmerging", "rooms", req.RoomID, "split")
+	_, err = cli.MakeRequest(http.MethodPost, urlPath, req, &resp)
+	return
+}
+
+func (cli *Client) BeeperDeleteRoom(roomID id.RoomID) (err error) {
+	urlPath := cli.BuildClientURL("unstable", "com.beeper.yeet", "rooms", roomID, "delete")
+	_, err = cli.MakeRequest(http.MethodPost, urlPath, nil, nil)
 	return
 }
 
@@ -1572,25 +2067,23 @@ func (cli *Client) TxnID() string {
 
 // NewClient creates a new Matrix Client ready for syncing
 func NewClient(homeserverURL string, userID id.UserID, accessToken string) (*Client, error) {
-	hsURL, err := url.Parse(homeserverURL)
+	hsURL, err := ParseAndNormalizeBaseURL(homeserverURL)
 	if err != nil {
 		return nil, err
 	}
-	if hsURL.Scheme == "" {
-		hsURL.Scheme = "https"
-	}
-	return &Client{
+	cli := &Client{
 		AccessToken:   accessToken,
 		UserAgent:     DefaultUserAgent,
 		HomeserverURL: hsURL,
 		UserID:        userID,
 		Client:        &http.Client{Timeout: 180 * time.Second},
-		Prefix:        URLPath{"_matrix", "client", "r0"},
 		Syncer:        NewDefaultSyncer(),
-		Logger:        stubLogger,
+		Log:           zerolog.Nop(),
 		// By default, use an in-memory store which will never save filter ids / next batch tokens to disk.
 		// The client will work with this storer: it just won't remember across restarts.
 		// In practice, a database backend should be used.
-		Store: NewInMemoryStore(),
-	}, nil
+		Store: NewMemorySyncStore(),
+	}
+	cli.Logger = maulogadapt.ZeroAsMau(&cli.Log)
+	return cli, nil
 }

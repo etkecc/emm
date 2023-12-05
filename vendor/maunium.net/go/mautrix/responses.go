@@ -1,55 +1,59 @@
 package mautrix
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"strconv"
+	"strings"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+	"go.mau.fi/util/jsontime"
+
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
 
-// RespWhoami is the JSON response for https://matrix.org/docs/spec/client_server/r0.6.1#get-matrix-client-r0-account-whoami
+// RespWhoami is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3accountwhoami
 type RespWhoami struct {
-	UserID id.UserID `json:"user_id"`
-	// N.B. This field is not in the spec yet, it's expected to land in r0.6.2 or r0.7.0
+	UserID   id.UserID   `json:"user_id"`
 	DeviceID id.DeviceID `json:"device_id"`
 }
 
-// RespCreateFilter is the JSON response for http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-user-userid-filter
+// RespCreateFilter is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3useruseridfilter
 type RespCreateFilter struct {
 	FilterID string `json:"filter_id"`
 }
 
-// RespVersions is the JSON response for http://matrix.org/docs/spec/client_server/r0.6.1.html#get-matrix-client-versions
-type RespVersions struct {
-	Versions         []string        `json:"versions"`
-	UnstableFeatures map[string]bool `json:"unstable_features"`
-}
-
-// RespJoinRoom is the JSON response for http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-join
+// RespJoinRoom is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidjoin
 type RespJoinRoom struct {
 	RoomID id.RoomID `json:"room_id"`
 }
 
-// RespLeaveRoom is the JSON response for http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-leave
+// RespLeaveRoom is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidleave
 type RespLeaveRoom struct{}
 
-// RespForgetRoom is the JSON response for http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-forget
+// RespForgetRoom is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidforget
 type RespForgetRoom struct{}
 
-// RespInviteUser is the JSON response for http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-invite
+// RespInviteUser is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidinvite
 type RespInviteUser struct{}
 
-// RespKickUser is the JSON response for http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-kick
+// RespKickUser is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidkick
 type RespKickUser struct{}
 
-// RespBanUser is the JSON response for http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-ban
+// RespBanUser is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidban
 type RespBanUser struct{}
 
-// RespUnbanUser is the JSON response for http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-rooms-roomid-unban
+// RespUnbanUser is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidunban
 type RespUnbanUser struct{}
 
-// RespTyping is the JSON response for https://matrix.org/docs/spec/client_server/r0.2.0.html#put-matrix-client-r0-rooms-roomid-typing-userid
+// RespTyping is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3roomsroomidtypinguserid
 type RespTyping struct{}
 
-// RespPresence is the JSON response for https://matrix.org/docs/spec/client_server/r0.6.1#get-matrix-client-r0-presence-userid-status
+// RespPresence is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3presenceuseridstatus
 type RespPresence struct {
 	Presence        event.Presence `json:"presence"`
 	LastActiveAgo   int            `json:"last_active_ago"`
@@ -57,28 +61,30 @@ type RespPresence struct {
 	CurrentlyActive bool           `json:"currently_active"`
 }
 
-// RespJoinedRooms is the JSON response for https://matrix.org/docs/spec/client_server/r0.4.0.html#get-matrix-client-r0-joined-rooms
+// RespJoinedRooms is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3joined_rooms
 type RespJoinedRooms struct {
 	JoinedRooms []id.RoomID `json:"joined_rooms"`
 }
 
-// RespJoinedMembers is the JSON response for https://matrix.org/docs/spec/client_server/r0.4.0.html#get-matrix-client-r0-joined-rooms
+// RespJoinedMembers is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3roomsroomidjoined_members
 type RespJoinedMembers struct {
-	Joined map[id.UserID]struct {
-		DisplayName *string `json:"display_name"`
-		AvatarURL   *string `json:"avatar_url"`
-	} `json:"joined"`
+	Joined map[id.UserID]JoinedMember `json:"joined"`
 }
 
-// RespMessages is the JSON response for https://matrix.org/docs/spec/client_server/r0.2.0.html#get-matrix-client-r0-rooms-roomid-messages
+type JoinedMember struct {
+	DisplayName string `json:"display_name,omitempty"`
+	AvatarURL   string `json:"avatar_url,omitempty"`
+}
+
+// RespMessages is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3roomsroomidmessages
 type RespMessages struct {
 	Start string         `json:"start"`
 	Chunk []*event.Event `json:"chunk"`
 	State []*event.Event `json:"state"`
-	End   string         `json:"end"`
+	End   string         `json:"end,omitempty"`
 }
 
-// RespContext is the JSON response for https://spec.matrix.org/v1.1/client-server-api/#get_matrixclientv3roomsroomidcontexteventid
+// RespContext is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3roomsroomidcontexteventid
 type RespContext struct {
 	End          string         `json:"end"`
 	Event        *event.Event   `json:"event"`
@@ -88,27 +94,57 @@ type RespContext struct {
 	State        []*event.Event `json:"state"`
 }
 
-// RespSendEvent is the JSON response for http://matrix.org/docs/spec/client_server/r0.2.0.html#put-matrix-client-r0-rooms-roomid-send-eventtype-txnid
+// RespSendEvent is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3roomsroomidsendeventtypetxnid
 type RespSendEvent struct {
 	EventID id.EventID `json:"event_id"`
 }
 
-// RespMediaUpload is the JSON response for http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-media-r0-upload
+// RespMediaConfig is the JSON response for https://spec.matrix.org/v1.4/client-server-api/#get_matrixmediav3config
+type RespMediaConfig struct {
+	UploadSize int64 `json:"m.upload.size,omitempty"`
+}
+
+// RespMediaUpload is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixmediav3upload
 type RespMediaUpload struct {
 	ContentURI id.ContentURI `json:"content_uri"`
 }
 
-// RespUserInteractive is the JSON response for https://matrix.org/docs/spec/client_server/r0.2.0.html#user-interactive-authentication-api
-type RespUserInteractive struct {
-	Flows []struct {
-		Stages []AuthType `json:"stages"`
-	} `json:"flows"`
-	Params    map[AuthType]interface{} `json:"params"`
-	Session   string                   `json:"session"`
-	Completed []string                 `json:"completed"`
+// RespCreateMXC is the JSON response for https://spec.matrix.org/v1.7/client-server-api/#post_matrixmediav1create
+type RespCreateMXC struct {
+	ContentURI      id.ContentURI `json:"content_uri"`
+	UnusedExpiresAt int           `json:"unused_expires_at,omitempty"`
 
-	ErrCode string `json:"errcode"`
-	Error   string `json:"error"`
+	UnstableUploadURL string `json:"com.beeper.msc3870.upload_url,omitempty"`
+}
+
+// RespPreviewURL is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#get_matrixmediav3preview_url
+type RespPreviewURL struct {
+	CanonicalURL string `json:"og:url,omitempty"`
+	Title        string `json:"og:title,omitempty"`
+	Type         string `json:"og:type,omitempty"`
+	Description  string `json:"og:description,omitempty"`
+
+	ImageURL id.ContentURIString `json:"og:image,omitempty"`
+
+	ImageSize   int    `json:"matrix:image:size,omitempty"`
+	ImageWidth  int    `json:"og:image:width,omitempty"`
+	ImageHeight int    `json:"og:image:height,omitempty"`
+	ImageType   string `json:"og:image:type,omitempty"`
+}
+
+// RespUserInteractive is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#user-interactive-authentication-api
+type RespUserInteractive struct {
+	Flows     []UIAFlow                `json:"flows,omitempty"`
+	Params    map[AuthType]interface{} `json:"params,omitempty"`
+	Session   string                   `json:"session,omitempty"`
+	Completed []string                 `json:"completed,omitempty"`
+
+	ErrCode string `json:"errcode,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type UIAFlow struct {
+	Stages []AuthType `json:"stages,omitempty"`
 }
 
 // HasSingleStageFlow returns true if there exists at least 1 Flow with a single stage of stageName.
@@ -121,24 +157,39 @@ func (r RespUserInteractive) HasSingleStageFlow(stageName AuthType) bool {
 	return false
 }
 
-// RespUserDisplayName is the JSON response for https://matrix.org/docs/spec/client_server/r0.2.0.html#get-matrix-client-r0-profile-userid-displayname
+// RespUserDisplayName is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3profileuseriddisplayname
 type RespUserDisplayName struct {
 	DisplayName string `json:"displayname"`
 }
 
-// RespRegister is the JSON response for http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-register
+type RespUserProfile struct {
+	DisplayName string        `json:"displayname"`
+	AvatarURL   id.ContentURI `json:"avatar_url"`
+}
+
+// RespRegisterAvailable is the JSON response for https://spec.matrix.org/v1.4/client-server-api/#get_matrixclientv3registeravailable
+type RespRegisterAvailable struct {
+	Available bool `json:"available"`
+}
+
+// RespRegister is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3register
 type RespRegister struct {
-	AccessToken  string      `json:"access_token"`
-	DeviceID     id.DeviceID `json:"device_id"`
-	HomeServer   string      `json:"home_server"`
-	RefreshToken string      `json:"refresh_token"`
-	UserID       id.UserID   `json:"user_id"`
+	AccessToken string      `json:"access_token,omitempty"`
+	DeviceID    id.DeviceID `json:"device_id,omitempty"`
+	UserID      id.UserID   `json:"user_id"`
+
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresInMS  int64  `json:"expires_in_ms,omitempty"`
+
+	// Deprecated: homeserver should be parsed from the user ID
+	HomeServer string `json:"home_server,omitempty"`
 }
 
 type LoginFlow struct {
 	Type AuthType `json:"type"`
 }
 
+// RespLoginFlows is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3login
 type RespLoginFlows struct {
 	Flows []LoginFlow `json:"flows"`
 }
@@ -158,18 +209,18 @@ func (rlf *RespLoginFlows) HasFlow(flowType ...AuthType) bool {
 	return rlf.FirstFlowOfType(flowType...) != nil
 }
 
-// RespLogin is the JSON response for https://matrix.org/docs/spec/client_server/r0.6.1#post-matrix-client-r0-login
+// RespLogin is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3login
 type RespLogin struct {
 	AccessToken string           `json:"access_token"`
 	DeviceID    id.DeviceID      `json:"device_id"`
 	UserID      id.UserID        `json:"user_id"`
-	WellKnown   *ClientWellKnown `json:"well_known"`
+	WellKnown   *ClientWellKnown `json:"well_known,omitempty"`
 }
 
-// RespLogout is the JSON response for http://matrix.org/docs/spec/client_server/r0.2.0.html#post-matrix-client-r0-logout
+// RespLogout is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3logout
 type RespLogout struct{}
 
-// RespCreateRoom is the JSON response for https://matrix.org/docs/spec/client_server/r0.6.0.html#post-matrix-client-r0-createroom
+// RespCreateRoom is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3createroom
 type RespCreateRoom struct {
 	RoomID id.RoomID `json:"room_id"`
 }
@@ -184,38 +235,72 @@ type LazyLoadSummary struct {
 	InvitedMemberCount *int        `json:"m.invited_member_count,omitempty"`
 }
 
-// RespSync is the JSON response for http://matrix.org/docs/spec/client_server/r0.6.0.html#get-matrix-client-r0-sync
+type SyncEventsList struct {
+	Events []*event.Event `json:"events,omitempty"`
+}
+
+type SyncTimeline struct {
+	SyncEventsList
+	Limited   bool   `json:"limited,omitempty"`
+	PrevBatch string `json:"prev_batch,omitempty"`
+}
+
+// RespSync is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3sync
 type RespSync struct {
 	NextBatch string `json:"next_batch"`
 
-	AccountData struct {
-		Events []*event.Event `json:"events"`
-	} `json:"account_data"`
-	Presence struct {
-		Events []*event.Event `json:"events"`
-	} `json:"presence"`
-	ToDevice struct {
-		Events []*event.Event `json:"events"`
-	} `json:"to_device"`
+	AccountData SyncEventsList `json:"account_data"`
+	Presence    SyncEventsList `json:"presence"`
+	ToDevice    SyncEventsList `json:"to_device"`
 
-	DeviceLists    DeviceLists `json:"device_lists"`
-	DeviceOTKCount OTKCount    `json:"device_one_time_keys_count"`
+	DeviceLists    DeviceLists       `json:"device_lists"`
+	DeviceOTKCount OTKCount          `json:"device_one_time_keys_count"`
+	FallbackKeys   []id.KeyAlgorithm `json:"device_unused_fallback_key_types"`
 
-	Rooms struct {
-		Leave  map[id.RoomID]SyncLeftRoom    `json:"leave"`
-		Join   map[id.RoomID]SyncJoinedRoom  `json:"join"`
-		Invite map[id.RoomID]SyncInvitedRoom `json:"invite"`
-	} `json:"rooms"`
+	Rooms RespSyncRooms `json:"rooms"`
+}
+
+type RespSyncRooms struct {
+	Leave  map[id.RoomID]*SyncLeftRoom    `json:"leave,omitempty"`
+	Join   map[id.RoomID]*SyncJoinedRoom  `json:"join,omitempty"`
+	Invite map[id.RoomID]*SyncInvitedRoom `json:"invite,omitempty"`
+	Knock  map[id.RoomID]*SyncKnockedRoom `json:"knock,omitempty"`
+}
+
+type marshalableRespSync RespSync
+
+var syncPathsToDelete = []string{"account_data", "presence", "to_device", "device_lists", "device_one_time_keys_count", "rooms"}
+
+// marshalAndDeleteEmpty marshals a JSON object, then uses gjson to delete empty objects at the given gjson paths.
+func marshalAndDeleteEmpty(marshalable interface{}, paths []string) ([]byte, error) {
+	data, err := json.Marshal(marshalable)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range paths {
+		res := gjson.GetBytes(data, path)
+		if res.IsObject() && len(res.Raw) == 2 {
+			data, err = sjson.DeleteBytes(data, path)
+			if err != nil {
+				return nil, fmt.Errorf("failed to delete empty %s: %w", path, err)
+			}
+		}
+	}
+	return data, nil
+}
+
+func (rs *RespSync) MarshalJSON() ([]byte, error) {
+	return marshalAndDeleteEmpty((*marshalableRespSync)(rs), syncPathsToDelete)
 }
 
 type DeviceLists struct {
-	Changed []id.UserID `json:"changed"`
-	Left    []id.UserID `json:"left"`
+	Changed []id.UserID `json:"changed,omitempty"`
+	Left    []id.UserID `json:"left,omitempty"`
 }
 
 type OTKCount struct {
-	Curve25519       int `json:"curve25519"`
-	SignedCurve25519 int `json:"signed_curve25519"`
+	Curve25519       int `json:"curve25519,omitempty"`
+	SignedCurve25519 int `json:"signed_curve25519,omitempty"`
 
 	// For appservice OTK counts only: the user ID in question
 	UserID   id.UserID   `json:"-"`
@@ -223,40 +308,59 @@ type OTKCount struct {
 }
 
 type SyncLeftRoom struct {
-	Summary LazyLoadSummary `json:"summary"`
-	State   struct {
-		Events []*event.Event `json:"events"`
-	} `json:"state"`
-	Timeline struct {
-		Events    []*event.Event `json:"events"`
-		Limited   bool           `json:"limited"`
-		PrevBatch string         `json:"prev_batch"`
-	} `json:"timeline"`
+	Summary  LazyLoadSummary `json:"summary"`
+	State    SyncEventsList  `json:"state"`
+	Timeline SyncTimeline    `json:"timeline"`
+}
+
+type marshalableSyncLeftRoom SyncLeftRoom
+
+var syncLeftRoomPathsToDelete = []string{"summary", "state", "timeline"}
+
+func (slr SyncLeftRoom) MarshalJSON() ([]byte, error) {
+	return marshalAndDeleteEmpty((marshalableSyncLeftRoom)(slr), syncLeftRoomPathsToDelete)
 }
 
 type SyncJoinedRoom struct {
-	Summary LazyLoadSummary `json:"summary"`
-	State   struct {
-		Events []*event.Event `json:"events"`
-	} `json:"state"`
-	Timeline struct {
-		Events    []*event.Event `json:"events"`
-		Limited   bool           `json:"limited"`
-		PrevBatch string         `json:"prev_batch"`
-	} `json:"timeline"`
-	Ephemeral struct {
-		Events []*event.Event `json:"events"`
-	} `json:"ephemeral"`
-	AccountData struct {
-		Events []*event.Event `json:"events"`
-	} `json:"account_data"`
+	Summary     LazyLoadSummary `json:"summary"`
+	State       SyncEventsList  `json:"state"`
+	Timeline    SyncTimeline    `json:"timeline"`
+	Ephemeral   SyncEventsList  `json:"ephemeral"`
+	AccountData SyncEventsList  `json:"account_data"`
+
+	UnreadNotifications *UnreadNotificationCounts `json:"unread_notifications,omitempty"`
+	// https://github.com/matrix-org/matrix-spec-proposals/pull/2654
+	MSC2654UnreadCount *int `json:"org.matrix.msc2654.unread_count,omitempty"`
+}
+
+type UnreadNotificationCounts struct {
+	HighlightCount    int `json:"highlight_count"`
+	NotificationCount int `json:"notification_count"`
+}
+
+type marshalableSyncJoinedRoom SyncJoinedRoom
+
+var syncJoinedRoomPathsToDelete = []string{"summary", "state", "timeline", "ephemeral", "account_data"}
+
+func (sjr SyncJoinedRoom) MarshalJSON() ([]byte, error) {
+	return marshalAndDeleteEmpty((marshalableSyncJoinedRoom)(sjr), syncJoinedRoomPathsToDelete)
 }
 
 type SyncInvitedRoom struct {
 	Summary LazyLoadSummary `json:"summary"`
-	State   struct {
-		Events []*event.Event `json:"events"`
-	} `json:"invite_state"`
+	State   SyncEventsList  `json:"invite_state"`
+}
+
+type marshalableSyncInvitedRoom SyncInvitedRoom
+
+var syncInvitedRoomPathsToDelete = []string{"summary"}
+
+func (sir SyncInvitedRoom) MarshalJSON() ([]byte, error) {
+	return marshalAndDeleteEmpty((marshalableSyncInvitedRoom)(sir), syncInvitedRoomPathsToDelete)
+}
+
+type SyncKnockedRoom struct {
+	State SyncEventsList `json:"knock_state"`
 }
 
 type RespTurnServer struct {
@@ -272,13 +376,16 @@ type RespAliasResolve struct {
 	RoomID  id.RoomID `json:"room_id"`
 	Servers []string  `json:"servers"`
 }
+type RespAliasList struct {
+	Aliases []id.RoomAlias `json:"aliases"`
+}
 
 type RespUploadKeys struct {
 	OneTimeKeyCounts OTKCount `json:"one_time_key_counts"`
 }
 
 type RespQueryKeys struct {
-	Failures        map[string]interface{}                   `json:"failures"`
+	Failures        map[string]interface{}                   `json:"failures,omitempty"`
 	DeviceKeys      map[id.UserID]map[id.DeviceID]DeviceKeys `json:"device_keys"`
 	MasterKeys      map[id.UserID]CrossSigningKeys           `json:"master_keys"`
 	SelfSigningKeys map[id.UserID]CrossSigningKeys           `json:"self_signing_keys"`
@@ -286,12 +393,12 @@ type RespQueryKeys struct {
 }
 
 type RespClaimKeys struct {
-	Failures    map[string]interface{}                                `json:"failures"`
+	Failures    map[string]interface{}                                `json:"failures,omitempty"`
 	OneTimeKeys map[id.UserID]map[id.DeviceID]map[id.KeyID]OneTimeKey `json:"one_time_keys"`
 }
 
 type RespUploadSignatures struct {
-	Failures map[string]interface{} `json:"failures"`
+	Failures map[string]interface{} `json:"failures,omitempty"`
 }
 
 type RespKeyChanges struct {
@@ -301,12 +408,12 @@ type RespKeyChanges struct {
 
 type RespSendToDevice struct{}
 
-// RespDevicesInfo is the JSON response for https://matrix.org/docs/spec/client_server/r0.6.1#get-matrix-client-r0-devices
+// RespDevicesInfo is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3devices
 type RespDevicesInfo struct {
 	Devices []RespDeviceInfo `json:"devices"`
 }
 
-// RespDeviceInfo is the JSON response for https://matrix.org/docs/spec/client_server/r0.6.1#get-matrix-client-r0-devices-deviceid
+// RespDeviceInfo is the JSON response for https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3devicesdeviceid
 type RespDeviceInfo struct {
 	DeviceID    id.DeviceID `json:"device_id"`
 	DisplayName string      `json:"display_name"`
@@ -314,6 +421,7 @@ type RespDeviceInfo struct {
 	LastSeenTS  int64       `json:"last_seen_ts"`
 }
 
+// Deprecated: MSC2716 was abandoned
 type RespBatchSend struct {
 	StateEventIDs []id.EventID `json:"state_event_ids"`
 	EventIDs      []id.EventID `json:"event_ids"`
@@ -323,4 +431,195 @@ type RespBatchSend struct {
 	BaseInsertionEventID id.EventID `json:"base_insertion_event_id"`
 
 	NextBatchID id.BatchID `json:"next_batch_id"`
+}
+
+type RespBeeperBatchSend struct {
+	EventIDs []id.EventID `json:"event_ids"`
+}
+
+// RespCapabilities is the JSON response for https://spec.matrix.org/v1.3/client-server-api/#get_matrixclientv3capabilities
+type RespCapabilities struct {
+	RoomVersions    *CapRoomVersions `json:"m.room_versions,omitempty"`
+	ChangePassword  *CapBooleanTrue  `json:"m.change_password,omitempty"`
+	SetDisplayname  *CapBooleanTrue  `json:"m.set_displayname,omitempty"`
+	SetAvatarURL    *CapBooleanTrue  `json:"m.set_avatar_url,omitempty"`
+	ThreePIDChanges *CapBooleanTrue  `json:"m.3pid_changes,omitempty"`
+
+	Custom map[string]interface{} `json:"-"`
+}
+
+type serializableRespCapabilities RespCapabilities
+
+func (rc *RespCapabilities) UnmarshalJSON(data []byte) error {
+	res := gjson.GetBytes(data, "capabilities")
+	if !res.Exists() || !res.IsObject() {
+		return nil
+	}
+	if res.Index > 0 {
+		data = data[res.Index : res.Index+len(res.Raw)]
+	} else {
+		data = []byte(res.Raw)
+	}
+	err := json.Unmarshal(data, (*serializableRespCapabilities)(rc))
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(data, &rc.Custom)
+	if err != nil {
+		return err
+	}
+	// Remove non-custom capabilities from the custom map so that they don't get overridden when serializing back
+	for _, field := range reflect.VisibleFields(reflect.TypeOf(rc).Elem()) {
+		jsonTag := strings.Split(field.Tag.Get("json"), ",")[0]
+		if jsonTag != "-" && jsonTag != "" {
+			delete(rc.Custom, jsonTag)
+		}
+	}
+	return nil
+}
+
+func (rc *RespCapabilities) MarshalJSON() ([]byte, error) {
+	marshalableCopy := make(map[string]interface{}, len(rc.Custom))
+	val := reflect.ValueOf(rc).Elem()
+	for _, field := range reflect.VisibleFields(val.Type()) {
+		jsonTag := strings.Split(field.Tag.Get("json"), ",")[0]
+		if jsonTag != "-" && jsonTag != "" {
+			fieldVal := val.FieldByIndex(field.Index)
+			if !fieldVal.IsNil() {
+				marshalableCopy[jsonTag] = fieldVal.Interface()
+			}
+		}
+	}
+	if rc.Custom != nil {
+		for key, value := range rc.Custom {
+			marshalableCopy[key] = value
+		}
+	}
+	var buf bytes.Buffer
+	buf.WriteString(`{"capabilities":`)
+	err := json.NewEncoder(&buf).Encode(marshalableCopy)
+	if err != nil {
+		return nil, err
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+type CapBoolean struct {
+	Enabled bool `json:"enabled"`
+}
+
+type CapBooleanTrue CapBoolean
+
+// IsEnabled returns true if the capability is either enabled explicitly or not specified (nil)
+func (cb *CapBooleanTrue) IsEnabled() bool {
+	// Default to true when
+	return cb == nil || cb.Enabled
+}
+
+type CapBooleanFalse CapBoolean
+
+// IsEnabled returns true if the capability is enabled explicitly. If it's not specified, this returns false.
+func (cb *CapBooleanFalse) IsEnabled() bool {
+	return cb != nil && cb.Enabled
+}
+
+type CapRoomVersionStability string
+
+const (
+	CapRoomVersionStable   CapRoomVersionStability = "stable"
+	CapRoomVersionUnstable CapRoomVersionStability = "unstable"
+)
+
+type CapRoomVersions struct {
+	Default   string                             `json:"default"`
+	Available map[string]CapRoomVersionStability `json:"available"`
+}
+
+func (vers *CapRoomVersions) IsStable(version string) bool {
+	if vers == nil || vers.Available == nil {
+		val, err := strconv.Atoi(version)
+		return err == nil && val > 0
+	}
+	return vers.Available[version] == CapRoomVersionStable
+}
+
+func (vers *CapRoomVersions) IsAvailable(version string) bool {
+	if vers == nil || vers.Available == nil {
+		return false
+	}
+	_, available := vers.Available[version]
+	return available
+}
+
+// RespHierarchy is the JSON response for https://spec.matrix.org/v1.4/client-server-api/#get_matrixclientv1roomsroomidhierarchy
+type RespHierarchy struct {
+	NextBatch string            `json:"next_batch,omitempty"`
+	Rooms     []ChildRoomsChunk `json:"rooms"`
+}
+
+type ChildRoomsChunk struct {
+	AvatarURL        id.ContentURI           `json:"avatar_url,omitempty"`
+	CanonicalAlias   id.RoomAlias            `json:"canonical_alias,omitempty"`
+	ChildrenState    []StrippedStateWithTime `json:"children_state"`
+	GuestCanJoin     bool                    `json:"guest_can_join"`
+	JoinRule         event.JoinRule          `json:"join_rule,omitempty"`
+	Name             string                  `json:"name,omitempty"`
+	NumJoinedMembers int                     `json:"num_joined_members"`
+	RoomID           id.RoomID               `json:"room_id"`
+	RoomType         event.RoomType          `json:"room_type"`
+	Topic            string                  `json:"topic,omitempty"`
+	WorldReadble     bool                    `json:"world_readable"`
+}
+
+type StrippedStateWithTime struct {
+	event.StrippedState
+	Timestamp jsontime.UnixMilli `json:"origin_server_ts"`
+}
+
+type RespAppservicePing struct {
+	DurationMS int64 `json:"duration_ms"`
+}
+
+type RespBeeperMergeRoom RespCreateRoom
+
+type RespBeeperSplitRoom struct {
+	RoomIDs map[string]id.RoomID `json:"room_ids"`
+}
+
+type RespTimestampToEvent struct {
+	EventID   id.EventID         `json:"event_id"`
+	Timestamp jsontime.UnixMilli `json:"origin_server_ts"`
+}
+
+type RespRoomKeysVersionCreate struct {
+	Version string `json:"version"`
+}
+
+type RespRoomKeysVersion struct {
+	Algorithm string          `json:"algorithm"`
+	AuthData  json.RawMessage `json:"auth_data"`
+	Count     int             `json:"count"`
+	ETag      string          `json:"etag"`
+	Version   string          `json:"version"`
+}
+
+type RespRoomKeys struct {
+	Rooms map[id.RoomID]RespRoomKeysRoom `json:"rooms"`
+}
+
+type RespRoomKeysRoom struct {
+	Sessions map[id.SessionID]RespRoomKeysSession `json:"sessions"`
+}
+
+type RespRoomKeysSession struct {
+	FirstMessageIndex int             `json:"first_message_index"`
+	ForwardedCount    int             `json:"forwarded_count"`
+	IsVerified        bool            `json:"is_verified"`
+	SessionData       json.RawMessage `json:"session_data"`
+}
+
+type RespRoomKeysUpdate struct {
+	Count int    `json:"count"`
+	ETag  string `json:"etag"`
 }

@@ -8,12 +8,13 @@ package event
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"maunium.net/go/mautrix/id"
 )
 
 // EncryptionEventContent represents the content of a m.room.encryption state event.
-// https://matrix.org/docs/spec/client_server/r0.6.0#m-room-encryption
+// https://spec.matrix.org/v1.2/client-server-api/#mroomencryption
 type EncryptionEventContent struct {
 	// The encryption algorithm to be used to encrypt messages sent in this room. Must be 'm.megolm.v1.aes-sha2'.
 	Algorithm id.Algorithm `json:"algorithm"`
@@ -24,18 +25,24 @@ type EncryptionEventContent struct {
 }
 
 // EncryptedEventContent represents the content of a m.room.encrypted message event.
-// https://matrix.org/docs/spec/client_server/r0.6.0#m-room-encrypted
+// https://spec.matrix.org/v1.2/client-server-api/#mroomencrypted
+//
+// Note that sender_key and device_id are deprecated in Megolm events as of https://github.com/matrix-org/matrix-spec-proposals/pull/3700
 type EncryptedEventContent struct {
-	Algorithm  id.Algorithm    `json:"algorithm"`
-	SenderKey  id.SenderKey    `json:"sender_key"`
-	DeviceID   id.DeviceID     `json:"device_id,omitempty"`  // Only present for Megolm events
-	SessionID  id.SessionID    `json:"session_id,omitempty"` // Only present for Megolm events
+	Algorithm id.Algorithm `json:"algorithm"`
+	SenderKey id.SenderKey `json:"sender_key,omitempty"`
+	// Deprecated: Matrix v1.3
+	DeviceID id.DeviceID `json:"device_id,omitempty"`
+	// Only present for Megolm events
+	SessionID id.SessionID `json:"session_id,omitempty"`
+
 	Ciphertext json.RawMessage `json:"ciphertext"`
 
 	MegolmCiphertext []byte         `json:"-"`
 	OlmCiphertext    OlmCiphertexts `json:"-"`
 
 	RelatesTo *RelatesTo `json:"m.relates_to,omitempty"`
+	Mentions  *Mentions  `json:"m.mentions,omitempty"`
 }
 
 type OlmCiphertexts map[id.Curve25519]struct {
@@ -81,21 +88,29 @@ func (content *EncryptedEventContent) MarshalJSON() ([]byte, error) {
 }
 
 // RoomKeyEventContent represents the content of a m.room_key to_device event.
-// https://matrix.org/docs/spec/client_server/r0.6.0#m-room-key
+// https://spec.matrix.org/v1.2/client-server-api/#mroom_key
 type RoomKeyEventContent struct {
 	Algorithm  id.Algorithm `json:"algorithm"`
 	RoomID     id.RoomID    `json:"room_id"`
 	SessionID  id.SessionID `json:"session_id"`
 	SessionKey string       `json:"session_key"`
+
+	MaxAge      int64 `json:"com.beeper.max_age_ms"`
+	MaxMessages int   `json:"com.beeper.max_messages"`
+	IsScheduled bool  `json:"com.beeper.is_scheduled"`
 }
 
 // ForwardedRoomKeyEventContent represents the content of a m.forwarded_room_key to_device event.
-// https://matrix.org/docs/spec/client_server/r0.6.0#m-forwarded-room-key
+// https://spec.matrix.org/v1.2/client-server-api/#mforwarded_room_key
 type ForwardedRoomKeyEventContent struct {
 	RoomKeyEventContent
 	SenderKey          id.SenderKey `json:"sender_key"`
 	SenderClaimedKey   id.Ed25519   `json:"sender_claimed_ed25519_key"`
 	ForwardingKeyChain []string     `json:"forwarding_curve25519_key_chain"`
+
+	MaxAge      int64 `json:"com.beeper.max_age_ms"`
+	MaxMessages int   `json:"com.beeper.max_messages"`
+	IsScheduled bool  `json:"com.beeper.is_scheduled"`
 }
 
 type KeyRequestAction string
@@ -106,7 +121,7 @@ const (
 )
 
 // RoomKeyRequestEventContent represents the content of a m.room_key_request to_device event.
-// https://matrix.org/docs/spec/client_server/r0.6.0#m-room-key-request
+// https://spec.matrix.org/v1.2/client-server-api/#mroom_key_request
 type RoomKeyRequestEventContent struct {
 	Body               RequestedKeyInfo `json:"body"`
 	Action             KeyRequestAction `json:"action"`
@@ -126,9 +141,11 @@ type RoomKeyWithheldCode string
 const (
 	RoomKeyWithheldBlacklisted  RoomKeyWithheldCode = "m.blacklisted"
 	RoomKeyWithheldUnverified   RoomKeyWithheldCode = "m.unverified"
-	RoomKeyWithheldUnauthorized RoomKeyWithheldCode = "m.unauthorized"
+	RoomKeyWithheldUnauthorized RoomKeyWithheldCode = "m.unauthorised"
 	RoomKeyWithheldUnavailable  RoomKeyWithheldCode = "m.unavailable"
 	RoomKeyWithheldNoOlmSession RoomKeyWithheldCode = "m.no_olm"
+
+	RoomKeyWithheldBeeperRedacted RoomKeyWithheldCode = "com.beeper.redacted"
 )
 
 type RoomKeyWithheldEventContent struct {
@@ -138,6 +155,25 @@ type RoomKeyWithheldEventContent struct {
 	SenderKey id.SenderKey        `json:"sender_key"`
 	Code      RoomKeyWithheldCode `json:"code"`
 	Reason    string              `json:"reason,omitempty"`
+}
+
+const groupSessionWithheldMsg = "group session has been withheld: %s"
+
+func (withheld *RoomKeyWithheldEventContent) Error() string {
+	switch withheld.Code {
+	case RoomKeyWithheldBlacklisted, RoomKeyWithheldUnverified, RoomKeyWithheldUnauthorized, RoomKeyWithheldUnavailable, RoomKeyWithheldNoOlmSession:
+		return fmt.Sprintf(groupSessionWithheldMsg, withheld.Code)
+	default:
+		return fmt.Sprintf(groupSessionWithheldMsg+" (%s)", withheld.Code, withheld.Reason)
+	}
+}
+
+func (withheld *RoomKeyWithheldEventContent) Is(other error) bool {
+	otherWithheld, ok := other.(*RoomKeyWithheldEventContent)
+	if !ok {
+		return false
+	}
+	return withheld.Code == "" || otherWithheld.Code == "" || withheld.Code == otherWithheld.Code
 }
 
 type DummyEventContent struct{}

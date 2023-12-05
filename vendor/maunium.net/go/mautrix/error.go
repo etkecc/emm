@@ -11,18 +11,23 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"golang.org/x/exp/maps"
 )
 
 // Common error codes from https://matrix.org/docs/spec/client_server/latest#api-standards
 //
 // Can be used with errors.Is() to check the response code without casting the error:
-//   err := client.Sync()
-//   if errors.Is(err, MUnknownToken) {
-//     // logout
-//   }
+//
+//	err := client.Sync()
+//	if errors.Is(err, MUnknownToken) {
+//		// logout
+//	}
 var (
 	// Forbidden access, e.g. joining a room without permission, failed login.
 	MForbidden = RespError{ErrCode: "M_FORBIDDEN"}
+	// Unrecognized request, e.g. the endpoint does not exist or is not implemented.
+	MUnrecognized = RespError{ErrCode: "M_UNRECOGNIZED"}
 	// The access token specified was not recognised.
 	MUnknownToken = RespError{ErrCode: "M_UNKNOWN_TOKEN"}
 	// No access token was specified for the request.
@@ -46,7 +51,7 @@ var (
 	MRoomInUse = RespError{ErrCode: "M_ROOM_IN_USE"}
 	// The state change requested cannot be performed, such as attempting to unban a user who is not banned.
 	MBadState = RespError{ErrCode: "M_BAD_STATE"}
-	// 	The request or entity was too large.
+	// The request or entity was too large.
 	MTooLarge = RespError{ErrCode: "M_TOO_LARGE"}
 	// The resource being requested is reserved by an application service, or the application service making the request has not created the resource.
 	MExclusive = RespError{ErrCode: "M_EXCLUSIVE"}
@@ -55,6 +60,13 @@ var (
 	// The client attempted to join a room that has a version the server does not support.
 	// Inspect the room_version property of the error response for the room's version.
 	MIncompatibleRoomVersion = RespError{ErrCode: "M_INCOMPATIBLE_ROOM_VERSION"}
+	// The client specified a parameter that has the wrong value.
+	MInvalidParam = RespError{ErrCode: "M_INVALID_PARAM"}
+
+	MURLNotSet         = RespError{ErrCode: "M_URL_NOT_SET"}
+	MBadStatus         = RespError{ErrCode: "M_BAD_STATUS"}
+	MConnectionTimeout = RespError{ErrCode: "M_CONNECTION_TIMEOUT"}
+	MConnectionFailed  = RespError{ErrCode: "M_CONNECTION_FAILED"}
 )
 
 // HTTPError An HTTP Error response, which may wrap an underlying native Go Error.
@@ -83,9 +95,9 @@ func (e HTTPError) Error() string {
 		return fmt.Sprintf("failed to %s %s: %s (HTTP %d): %s", e.Request.Method, e.Request.URL.Path,
 			e.RespError.ErrCode, e.Response.StatusCode, e.RespError.Err)
 	} else {
-		msg := fmt.Sprintf("failed to %s %s: %s", e.Request.Method, e.Request.URL.Path, e.Response.Status)
+		msg := fmt.Sprintf("failed to %s %s: HTTP %d", e.Request.Method, e.Request.URL.Path, e.Response.StatusCode)
 		if len(e.ResponseBody) > 0 {
-			msg = fmt.Sprintf("%s\n%s", msg, e.ResponseBody)
+			msg = fmt.Sprintf("%s: %s", msg, e.ResponseBody)
 		}
 		return msg
 	}
@@ -101,7 +113,7 @@ func (e HTTPError) Unwrap() error {
 }
 
 // RespError is the standard JSON error response from Homeservers. It also implements the Golang "error" interface.
-// See http://matrix.org/docs/spec/client_server/r0.6.1.html#api-standards
+// See https://spec.matrix.org/v1.2/client-server-api/#api-standards
 type RespError struct {
 	ErrCode   string
 	Err       string
@@ -119,12 +131,13 @@ func (e *RespError) UnmarshalJSON(data []byte) error {
 }
 
 func (e *RespError) MarshalJSON() ([]byte, error) {
-	if e.ExtraData == nil {
-		e.ExtraData = make(map[string]interface{})
+	data := maps.Clone(e.ExtraData)
+	if data == nil {
+		data = make(map[string]any)
 	}
-	e.ExtraData["errcode"] = e.ErrCode
-	e.ExtraData["error"] = e.Err
-	return json.Marshal(&e.ExtraData)
+	data["errcode"] = e.ErrCode
+	data["error"] = e.Err
+	return json.Marshal(data)
 }
 
 // Error returns the errcode and error message.

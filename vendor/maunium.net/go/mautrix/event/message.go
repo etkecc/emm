@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Tulir Asokan
+// Copyright (c) 2023 Tulir Asokan
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,13 +9,16 @@ package event
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
+
+	"golang.org/x/net/html"
 
 	"maunium.net/go/mautrix/crypto/attachment"
 	"maunium.net/go/mautrix/id"
 )
 
 // MessageType is the sub-type of a m.room.message event.
-// https://matrix.org/docs/spec/client_server/r0.6.0#m-room-message-msgtypes
+// https://spec.matrix.org/v1.2/client-server-api/#mroommessage-msgtypes
 type MessageType string
 
 // Msgtypes
@@ -30,10 +33,12 @@ const (
 	MsgFile     MessageType = "m.file"
 
 	MsgVerificationRequest MessageType = "m.key.verification.request"
+
+	MsgBeeperGallery MessageType = "com.beeper.gallery"
 )
 
 // Format specifies the format of the formatted_body in m.room.message events.
-// https://matrix.org/docs/spec/client_server/r0.6.0#m-room-message-msgtypes
+// https://spec.matrix.org/v1.2/client-server-api/#mroommessage-msgtypes
 type Format string
 
 // Message formats
@@ -43,12 +48,12 @@ const (
 
 // RedactionEventContent represents the content of a m.room.redaction message event.
 //
-// The redacted event ID is still at the top level, but will move in a future room version.
-// See https://github.com/matrix-org/matrix-doc/pull/2244 and https://github.com/matrix-org/matrix-doc/pull/2174
-//
-// https://matrix.org/docs/spec/client_server/r0.6.0#m-room-redaction
+// https://spec.matrix.org/v1.8/client-server-api/#mroomredaction
 type RedactionEventContent struct {
 	Reason string `json:"reason,omitempty"`
+
+	// The event ID is here as of room v11. In old servers it may only be at the top level.
+	Redacts id.EventID `json:"redacts,omitempty"`
 }
 
 // ReactionEventContent represents the content of a m.reaction message event.
@@ -69,15 +74,15 @@ func (content *ReactionEventContent) SetRelatesTo(rel *RelatesTo) {
 	content.RelatesTo = *rel
 }
 
-// MssageEventContent represents the content of a m.room.message event.
+// MessageEventContent represents the content of a m.room.message event.
 //
 // It is also used to represent m.sticker events, as they are equivalent to m.room.message
 // with the exception of the msgtype field.
 //
-// https://matrix.org/docs/spec/client_server/r0.6.0#m-room-message
+// https://spec.matrix.org/v1.2/client-server-api/#mroommessage
 type MessageEventContent struct {
 	// Base m.room.message fields
-	MsgType MessageType `json:"msgtype"`
+	MsgType MessageType `json:"msgtype,omitempty"`
 	Body    string      `json:"body"`
 
 	// Extra fields for text types
@@ -92,6 +97,10 @@ type MessageEventContent struct {
 	Info *FileInfo           `json:"info,omitempty"`
 	File *EncryptedFileInfo  `json:"file,omitempty"`
 
+	FileName string `json:"filename,omitempty"`
+
+	Mentions *Mentions `json:"m.mentions,omitempty"`
+
 	// Edits and relations
 	NewContent *MessageEventContent `json:"m.new_content,omitempty"`
 	RelatesTo  *RelatesTo           `json:"m.relates_to,omitempty"`
@@ -102,6 +111,11 @@ type MessageEventContent struct {
 	Methods    []VerificationMethod `json:"methods,omitempty"`
 
 	replyFallbackRemoved bool
+
+	MessageSendRetry         *BeeperRetryMetadata   `json:"com.beeper.message_send_retry,omitempty"`
+	BeeperGalleryImages      []*MessageEventContent `json:"com.beeper.gallery.images,omitempty"`
+	BeeperGalleryCaption     string                 `json:"com.beeper.gallery.caption,omitempty"`
+	BeeperGalleryCaptionHTML string                 `json:"com.beeper.gallery.caption_html,omitempty"`
 }
 
 func (content *MessageEventContent) GetRelatesTo() *RelatesTo {
@@ -122,15 +136,37 @@ func (content *MessageEventContent) SetRelatesTo(rel *RelatesTo) {
 func (content *MessageEventContent) SetEdit(original id.EventID) {
 	newContent := *content
 	content.NewContent = &newContent
-	content.RelatesTo = &RelatesTo{
-		Type:    RelReplace,
-		EventID: original,
-	}
+	content.RelatesTo = (&RelatesTo{}).SetReplace(original)
 	if content.MsgType == MsgText || content.MsgType == MsgNotice {
 		content.Body = "* " + content.Body
 		if content.Format == FormatHTML && len(content.FormattedBody) > 0 {
 			content.FormattedBody = "* " + content.FormattedBody
 		}
+		// If the message is long, remove most of the useless edit fallback to avoid event size issues.
+		if len(content.Body) > 10000 {
+			content.FormattedBody = ""
+			content.Format = ""
+			content.Body = content.Body[:50] + "[edit fallback cut…]"
+		}
+	}
+}
+
+// TextToHTML converts the given text to a HTML-safe representation by escaping HTML characters
+// and replacing newlines with <br/> tags.
+func TextToHTML(text string) string {
+	return strings.ReplaceAll(html.EscapeString(text), "\n", "<br/>")
+}
+
+// ReverseTextToHTML reverses the modifications made by TextToHTML, i.e. replaces <br/> tags with newlines
+// and unescapes HTML escape codes. For actually parsing HTML, use the format package instead.
+func ReverseTextToHTML(input string) string {
+	return html.UnescapeString(strings.ReplaceAll(input, "<br/>", "\n"))
+}
+
+func (content *MessageEventContent) EnsureHasHTML() {
+	if len(content.FormattedBody) == 0 || content.Format != FormatHTML {
+		content.FormattedBody = TextToHTML(content.Body)
+		content.Format = FormatHTML
 	}
 }
 
@@ -146,6 +182,11 @@ func (content *MessageEventContent) GetInfo() *FileInfo {
 		content.Info = &FileInfo{}
 	}
 	return content.Info
+}
+
+type Mentions struct {
+	UserIDs []id.UserID `json:"user_ids,omitempty"`
+	Room    bool        `json:"room,omitempty"`
 }
 
 type EncryptedFileInfo struct {
@@ -204,12 +245,13 @@ func (sfi *serializableFileInfo) CopyFrom(fileInfo *FileInfo) *serializableFileI
 
 func (sfi *serializableFileInfo) CopyTo(fileInfo *FileInfo) {
 	*fileInfo = FileInfo{
-		Width:        numberToInt(sfi.Width),
-		Height:       numberToInt(sfi.Height),
-		Size:         numberToInt(sfi.Size),
-		Duration:     numberToInt(sfi.Duration),
-		MimeType:     sfi.MimeType,
-		ThumbnailURL: sfi.ThumbnailURL,
+		Width:         numberToInt(sfi.Width),
+		Height:        numberToInt(sfi.Height),
+		Size:          numberToInt(sfi.Size),
+		Duration:      numberToInt(sfi.Duration),
+		MimeType:      sfi.MimeType,
+		ThumbnailURL:  sfi.ThumbnailURL,
+		ThumbnailFile: sfi.ThumbnailFile,
 	}
 	if sfi.ThumbnailInfo != nil {
 		fileInfo.ThumbnailInfo = &FileInfo{}

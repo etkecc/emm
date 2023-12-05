@@ -1,16 +1,53 @@
 # github.com/btcsuite/btcutil v1.0.2
 ## explicit; go 1.13
-github.com/btcsuite/btcutil/base58
-# golang.org/x/crypto v0.0.0-20211215153901-e495a2d5b3d3
-## explicit; go 1.17
+# github.com/mattn/go-colorable v0.1.13
+## explicit; go 1.15
+github.com/mattn/go-colorable
+# github.com/mattn/go-isatty v0.0.20
+## explicit; go 1.15
+github.com/mattn/go-isatty
+# github.com/rs/zerolog v1.31.0
+## explicit; go 1.15
+github.com/rs/zerolog
+github.com/rs/zerolog/internal/cbor
+github.com/rs/zerolog/internal/json
+# github.com/tidwall/gjson v1.17.0
+## explicit; go 1.12
+github.com/tidwall/gjson
+# github.com/tidwall/match v1.1.1
+## explicit; go 1.15
+github.com/tidwall/match
+# github.com/tidwall/pretty v1.2.1
+## explicit; go 1.16
+github.com/tidwall/pretty
+# github.com/tidwall/sjson v1.2.5
+## explicit; go 1.14
+github.com/tidwall/sjson
+# go.mau.fi/util v0.2.1
+## explicit; go 1.20
+go.mau.fi/util/base58
+go.mau.fi/util/jsontime
+go.mau.fi/util/retryafter
+# golang.org/x/crypto v0.16.0
+## explicit; go 1.18
 golang.org/x/crypto/hkdf
 golang.org/x/crypto/pbkdf2
-# golang.org/x/net v0.0.0-20211216030914-fe4d6282115f
-## explicit; go 1.17
+# golang.org/x/exp v0.0.0-20231127185646-65229373498e
+## explicit; go 1.20
+golang.org/x/exp/maps
+# golang.org/x/net v0.19.0
+## explicit; go 1.18
 golang.org/x/net/html
 golang.org/x/net/html/atom
-# maunium.net/go/mautrix v0.10.9
-## explicit; go 1.14
+# golang.org/x/sys v0.15.0
+## explicit; go 1.18
+golang.org/x/sys/unix
+# maunium.net/go/maulogger/v2 v2.4.1
+## explicit; go 1.19
+maunium.net/go/maulogger/v2
+maunium.net/go/maulogger/v2/maulogadapt
+# maunium.net/go/mautrix v0.16.2
+## explicit; go 1.20
 maunium.net/go/mautrix
 maunium.net/go/mautrix/crypto/attachment
 maunium.net/go/mautrix/crypto/utils

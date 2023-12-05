@@ -3,9 +3,8 @@ default:
     @just --list --justfile {{ justfile() }}
 
 # update go deps
-update:
-    go get ./cmd
-    go mod tidy
+update *flags:
+    go get {{flags}} ./cmd
     go mod vendor
 
 # run linter

@@ -18,85 +18,108 @@ const (
 	RelReplace    RelationType = "m.replace"
 	RelReference  RelationType = "m.reference"
 	RelAnnotation RelationType = "m.annotation"
-	RelReply      RelationType = "net.maunium.reply"
+	RelThread     RelationType = "m.thread"
 )
 
 type RelatesTo struct {
-	Type    RelationType
-	EventID id.EventID
-	Key     string
-}
-
-type serializableInReplyTo struct {
-	EventID id.EventID `json:"event_id,omitempty"`
-}
-
-type serializableRelatesTo struct {
-	InReplyTo *serializableInReplyTo `json:"m.in_reply_to,omitempty"`
-
 	Type    RelationType `json:"rel_type,omitempty"`
 	EventID id.EventID   `json:"event_id,omitempty"`
 	Key     string       `json:"key,omitempty"`
+
+	InReplyTo     *InReplyTo `json:"m.in_reply_to,omitempty"`
+	IsFallingBack bool       `json:"is_falling_back,omitempty"`
+}
+
+type InReplyTo struct {
+	EventID id.EventID `json:"event_id,omitempty"`
+
+	UnstableRoomID id.RoomID `json:"room_id,omitempty"`
+}
+
+func (rel *RelatesTo) Copy() *RelatesTo {
+	if rel == nil {
+		return nil
+	}
+	cp := *rel
+	return &cp
 }
 
 func (rel *RelatesTo) GetReplaceID() id.EventID {
-	if rel.Type == RelReplace {
+	if rel != nil && rel.Type == RelReplace {
 		return rel.EventID
 	}
 	return ""
 }
 
 func (rel *RelatesTo) GetReferenceID() id.EventID {
-	if rel.Type == RelReference {
+	if rel != nil && rel.Type == RelReference {
 		return rel.EventID
 	}
 	return ""
 }
 
-func (rel *RelatesTo) GetReplyID() id.EventID {
-	if rel.Type == RelReply {
+func (rel *RelatesTo) GetThreadParent() id.EventID {
+	if rel != nil && rel.Type == RelThread {
 		return rel.EventID
+	}
+	return ""
+}
+
+func (rel *RelatesTo) GetReplyTo() id.EventID {
+	if rel != nil && rel.InReplyTo != nil {
+		return rel.InReplyTo.EventID
+	}
+	return ""
+}
+
+func (rel *RelatesTo) GetNonFallbackReplyTo() id.EventID {
+	if rel != nil && rel.InReplyTo != nil && !rel.IsFallingBack {
+		return rel.InReplyTo.EventID
 	}
 	return ""
 }
 
 func (rel *RelatesTo) GetAnnotationID() id.EventID {
-	if rel.Type == RelAnnotation {
+	if rel != nil && rel.Type == RelAnnotation {
 		return rel.EventID
 	}
 	return ""
 }
 
 func (rel *RelatesTo) GetAnnotationKey() string {
-	if rel.Type == RelAnnotation {
+	if rel != nil && rel.Type == RelAnnotation {
 		return rel.Key
 	}
 	return ""
 }
 
-func (rel *RelatesTo) UnmarshalJSON(data []byte) error {
-	var srel serializableRelatesTo
-	if err := json.Unmarshal(data, &srel); err != nil {
-		return err
-	}
-	if len(srel.Type) > 0 {
-		rel.Type = srel.Type
-		rel.EventID = srel.EventID
-		rel.Key = srel.Key
-	} else if srel.InReplyTo != nil && len(srel.InReplyTo.EventID) > 0 {
-		rel.Type = RelReply
-		rel.EventID = srel.InReplyTo.EventID
-		rel.Key = ""
-	}
-	return nil
+func (rel *RelatesTo) SetReplace(mxid id.EventID) *RelatesTo {
+	rel.Type = RelReplace
+	rel.EventID = mxid
+	return rel
 }
 
-func (rel *RelatesTo) MarshalJSON() ([]byte, error) {
-	srel := serializableRelatesTo{Type: rel.Type, EventID: rel.EventID, Key: rel.Key}
-	if rel.Type == RelReply {
-		srel.InReplyTo = &serializableInReplyTo{rel.EventID}
+func (rel *RelatesTo) SetReplyTo(mxid id.EventID) *RelatesTo {
+	rel.InReplyTo = &InReplyTo{EventID: mxid}
+	rel.IsFallingBack = false
+	return rel
+}
+
+func (rel *RelatesTo) SetThread(mxid, fallback id.EventID) *RelatesTo {
+	rel.Type = RelThread
+	rel.EventID = mxid
+	if fallback != "" && rel.GetReplyTo() == "" {
+		rel.SetReplyTo(fallback)
+		rel.IsFallingBack = true
 	}
-	return json.Marshal(&srel)
+	return rel
+}
+
+func (rel *RelatesTo) SetAnnotation(mxid id.EventID, key string) *RelatesTo {
+	rel.Type = RelAnnotation
+	rel.EventID = mxid
+	rel.Key = key
+	return rel
 }
 
 type RelationChunkItem struct {
@@ -126,7 +149,9 @@ func (ac *AnnotationChunk) UnmarshalJSON(data []byte) error {
 	}
 	ac.Map = make(map[string]int)
 	for _, item := range ac.Chunk {
-		ac.Map[item.Key] += item.Count
+		if item.Key != "" {
+			ac.Map[item.Key] += item.Count
+		}
 	}
 	return nil
 }
@@ -140,6 +165,7 @@ func (ac *AnnotationChunk) Serialize() RelationChunk {
 			Key:   key,
 			Count: count,
 		}
+		i++
 	}
 	return ac.RelationChunk
 }
@@ -196,5 +222,13 @@ func (relations *Relations) MarshalJSON() ([]byte, error) {
 	relations.Raw[RelAnnotation] = relations.Annotations.Serialize()
 	relations.Raw[RelReference] = relations.References.Serialize(RelReference)
 	relations.Raw[RelReplace] = relations.Replaces.Serialize(RelReplace)
+	for key, item := range relations.Raw {
+		if !item.Limited {
+			item.Count = len(item.Chunk)
+		}
+		if item.Count == 0 {
+			delete(relations.Raw, key)
+		}
+	}
 	return json.Marshal(relations.Raw)
 }
