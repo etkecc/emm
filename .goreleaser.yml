@@ -5,13 +5,18 @@ before:
 
 builds:
   - main: ./cmd
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -extldflags "-static"
+    flags:
+      - -tags=timetzdata,goolm
     binary: emm
     goos:
       - freebsd
       - linux
       - darwin
     goarch:
-      - arm
       - arm64
       - amd64
 
@@ -19,9 +24,9 @@ nfpms:
   - vendor: https://etke.cc
     package_name: export-matrix-messages
     maintainer: etke.cc
-    description: emm stands for export-matrix-messages, cli tool that can export messages sent into specific matrix room to one or more files
+    description: A CLI tool that joins the room and exports last N messages to the file you specified.
     homepage: https://gitlab.com/etke.cc/tools/emm
-    license: MIT
+    license: GPL-3.0
     formats:
       - deb
       - rpm

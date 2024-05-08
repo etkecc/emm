@@ -1,6 +1,7 @@
 package matrix
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -10,7 +11,7 @@ import (
 
 // ResolveServer resolves actual homeserver URL from possible delegated host
 func ResolveServer(homeserver string) (string, error) {
-	discover, err := mautrix.DiscoverClientAPI(homeserver)
+	discover, err := mautrix.DiscoverClientAPI(context.Background(), homeserver)
 	if err != nil {
 		return "", err
 	}
@@ -45,7 +46,7 @@ func resolveAlias(alias id.RoomAlias) (id.RoomID, error) {
 	var resp *mautrix.RespAliasResolve
 	err := retry(func() error {
 		var resolveErr error
-		resp, resolveErr = client.ResolveAlias(alias)
+		resp, resolveErr = client.ResolveAlias(context.Background(), alias)
 
 		return resolveErr
 	})

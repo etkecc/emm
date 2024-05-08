@@ -1,6 +1,7 @@
 package matrix
 
 import (
+	"context"
 	"log"
 	"strings"
 	"time"
@@ -31,7 +32,7 @@ func Init(hs, login, password string, roomID id.RoomID, alias id.RoomAlias, igno
 	}
 	err = retry(func() error {
 		log.Println("authorizing...")
-		_, loginErr := client.Login(&mautrix.ReqLogin{
+		_, loginErr := client.Login(context.Background(), &mautrix.ReqLogin{
 			Type: "m.login.password",
 			Identifier: mautrix.UserIdentifier{
 				Type: mautrix.IdentifierTypeUser,
@@ -64,7 +65,7 @@ func Exit() {
 	//nolint // nobody cares at that moment
 	retry(func() error {
 		log.Println("exiting...")
-		_, logoutErr := client.Logout()
+		_, logoutErr := client.Logout(context.Background())
 		return logoutErr
 	})
 }

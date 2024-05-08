@@ -10,10 +10,10 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
-	"math/rand"
 	"strings"
 
 	"go.mau.fi/util/base58"
@@ -124,9 +124,9 @@ func EncodeBase58RecoveryKey(key []byte) string {
 	return spacedKey
 }
 
-// HMACSHA256B64 calculates the base64 of the SHA256 hmac of the input with the given key.
+// HMACSHA256B64 calculates the unpadded base64 of the SHA256 hmac of the input with the given key.
 func HMACSHA256B64(input []byte, hmacKey [HMACKeyLength]byte) string {
 	h := hmac.New(sha256.New, hmacKey[:])
 	h.Write(input)
-	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+	return base64.RawStdEncoding.EncodeToString(h.Sum(nil))
 }

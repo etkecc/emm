@@ -116,6 +116,8 @@ type MessageEventContent struct {
 	BeeperGalleryImages      []*MessageEventContent `json:"com.beeper.gallery.images,omitempty"`
 	BeeperGalleryCaption     string                 `json:"com.beeper.gallery.caption,omitempty"`
 	BeeperGalleryCaptionHTML string                 `json:"com.beeper.gallery.caption_html,omitempty"`
+
+	BeeperLinkPreviews []*BeeperLinkPreview `json:"com.beeper.linkpreviews,omitempty"`
 }
 
 func (content *MessageEventContent) GetRelatesTo() *RelatesTo {
@@ -199,10 +201,14 @@ type FileInfo struct {
 	ThumbnailInfo *FileInfo           `json:"thumbnail_info,omitempty"`
 	ThumbnailURL  id.ContentURIString `json:"thumbnail_url,omitempty"`
 	ThumbnailFile *EncryptedFileInfo  `json:"thumbnail_file,omitempty"`
-	Width         int                 `json:"-"`
-	Height        int                 `json:"-"`
-	Duration      int                 `json:"-"`
-	Size          int                 `json:"-"`
+
+	Blurhash     string `json:"blurhash,omitempty"`
+	AnoaBlurhash string `json:"xyz.amorgan.blurhash,omitempty"`
+
+	Width    int `json:"-"`
+	Height   int `json:"-"`
+	Duration int `json:"-"`
+	Size     int `json:"-"`
 }
 
 type serializableFileInfo struct {
@@ -210,6 +216,9 @@ type serializableFileInfo struct {
 	ThumbnailInfo *serializableFileInfo `json:"thumbnail_info,omitempty"`
 	ThumbnailURL  id.ContentURIString   `json:"thumbnail_url,omitempty"`
 	ThumbnailFile *EncryptedFileInfo    `json:"thumbnail_file,omitempty"`
+
+	Blurhash     string `json:"blurhash,omitempty"`
+	AnoaBlurhash string `json:"xyz.amorgan.blurhash,omitempty"`
 
 	Width    json.Number `json:"w,omitempty"`
 	Height   json.Number `json:"h,omitempty"`
@@ -226,6 +235,9 @@ func (sfi *serializableFileInfo) CopyFrom(fileInfo *FileInfo) *serializableFileI
 		ThumbnailURL:  fileInfo.ThumbnailURL,
 		ThumbnailInfo: (&serializableFileInfo{}).CopyFrom(fileInfo.ThumbnailInfo),
 		ThumbnailFile: fileInfo.ThumbnailFile,
+
+		Blurhash:     fileInfo.Blurhash,
+		AnoaBlurhash: fileInfo.AnoaBlurhash,
 	}
 	if fileInfo.Width > 0 {
 		sfi.Width = json.Number(strconv.Itoa(fileInfo.Width))
@@ -252,6 +264,8 @@ func (sfi *serializableFileInfo) CopyTo(fileInfo *FileInfo) {
 		MimeType:      sfi.MimeType,
 		ThumbnailURL:  sfi.ThumbnailURL,
 		ThumbnailFile: sfi.ThumbnailFile,
+		Blurhash:      sfi.Blurhash,
+		AnoaBlurhash:  sfi.AnoaBlurhash,
 	}
 	if sfi.ThumbnailInfo != nil {
 		fileInfo.ThumbnailInfo = &FileInfo{}

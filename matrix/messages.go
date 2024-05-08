@@ -1,6 +1,7 @@
 package matrix
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -66,6 +67,7 @@ func Messages(limit int) ([]*Message, error) {
 }
 
 func paginate(limit int) error {
+	ctx := context.Background()
 	var token string
 	page := 1
 	for i := Page; i < limit; {
@@ -73,7 +75,7 @@ func paginate(limit int) error {
 		log.Println("requesting messages from", room, "page =", page)
 		err := retry(func() error {
 			var messagesErr error
-			chunks, messagesErr = client.Messages(room, token, "", 'b', filter, Page)
+			chunks, messagesErr = client.Messages(ctx, room, token, "", 'b', filter, Page)
 
 			return messagesErr
 		})
@@ -100,11 +102,12 @@ func paginate(limit int) error {
 }
 
 func load() error {
+	ctx := context.Background()
 	var chunks *mautrix.RespMessages
 	log.Println("requesting messages from", room, "without pagination")
 	err := retry(func() error {
 		var messagesErr error
-		chunks, messagesErr = client.Messages(room, "", "", 'b', filter, Page)
+		chunks, messagesErr = client.Messages(ctx, room, "", "", 'b', filter, Page)
 
 		return messagesErr
 	})

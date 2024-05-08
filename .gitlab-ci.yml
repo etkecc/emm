@@ -1,17 +1,17 @@
 stages:
   - test
   - release
-
-lint:
-  stage: test
+default:
   image: registry.gitlab.com/etke.cc/base/build
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - /root/cache/
+
+test:
+  stage: test
   script:
     - just lint
-
-unit:
-  stage: test
-  image: registry.gitlab.com/etke.cc/base/build
-  script:
     - just test
 
 release:
@@ -21,4 +21,4 @@ release:
     name: goreleaser/goreleaser
     entrypoint: ['']
   script:
-    - goreleaser release --rm-dist
+    - goreleaser release --clean
