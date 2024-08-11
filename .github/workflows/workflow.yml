@@ -1,0 +1,49 @@
+name: CI (main and tags)
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+permissions:
+  checks: write
+  contents: write
+  packages: write
+  pull-requests: read
+jobs:
+  lint-test:
+    name: Lint and Test
+    runs-on: ubuntu-latest
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+      - name: add just repo
+        run: |
+          wget -qO - 'https://proget.makedeb.org/debian-feeds/prebuilt-mpr.pub' | gpg --dearmor | sudo tee /usr/share/keyrings/prebuilt-mpr-archive-keyring.gpg 1> /dev/null
+          echo "deb [arch=all,$(dpkg --print-architecture) signed-by=/usr/share/keyrings/prebuilt-mpr-archive-keyring.gpg] https://proget.makedeb.org prebuilt-mpr $(lsb_release -cs)" | sudo tee /etc/apt/sources.list.d/prebuilt-mpr.list
+      - uses: ConorMacBride/install-package@v1
+        with:
+          apt: just
+      - name: lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+      - name: test
+        run: just test
+
+  build-release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+      - name: Release
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

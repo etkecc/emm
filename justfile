@@ -16,6 +16,10 @@ lint:
 lintfix:
     golangci-lint run --fix ./...
 
+# generate mocks
+mocks:
+    @mockery --all --inpackage --testonly --exclude vendor
+
 # run unit tests
 test packages="./...":
     @go test -cover -coverprofile=cover.out -coverpkg={{ packages }} -covermode=set {{ packages }}

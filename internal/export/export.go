@@ -3,7 +3,7 @@ package export
 import (
 	"text/template"
 
-	"gitlab.com/etke.cc/tools/emm/matrix"
+	"github.com/etkecc/emm/internal/matrix"
 )
 
 // DefaultTemplate text
