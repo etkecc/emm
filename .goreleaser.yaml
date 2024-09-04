@@ -14,7 +14,7 @@ builds:
       - -extldflags "-static"
     flags:
       - -tags=timetzdata,goolm
-    main: ./cmd/
+    main: ./cmd/emm
     goos:
       - linux
       - windows
