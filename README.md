@@ -46,4 +46,4 @@ Usage of emm:
 * Arch Linux [AUR](https://aur.archlinux.org/packages/export-matrix-messages-git/)
 * [Releases](https://github.com/etkecc/emm/releases)
 * or `go install github.com/etkecc/emm/cmd/emm@latest`
-* or from source code
+* or `just install` from source code
