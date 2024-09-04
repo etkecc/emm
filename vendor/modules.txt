@@ -21,8 +21,8 @@ github.com/tidwall/pretty
 # github.com/tidwall/sjson v1.2.5
 ## explicit; go 1.14
 github.com/tidwall/sjson
-# go.mau.fi/util v0.6.0
-## explicit; go 1.21
+# go.mau.fi/util v0.7.0
+## explicit; go 1.22
 go.mau.fi/util/base58
 go.mau.fi/util/exerrors
 go.mau.fi/util/exgjson
@@ -36,7 +36,7 @@ go.mau.fi/util/retryafter
 golang.org/x/crypto/curve25519
 golang.org/x/crypto/hkdf
 golang.org/x/crypto/pbkdf2
-# golang.org/x/exp v0.0.0-20240808152545-0cdaa3abc0fa
+# golang.org/x/exp v0.0.0-20240823005443-9b4947da3948
 ## explicit; go 1.20
 golang.org/x/exp/maps
 # golang.org/x/net v0.28.0
@@ -46,8 +46,8 @@ golang.org/x/net/html/atom
 # golang.org/x/sys v0.24.0
 ## explicit; go 1.18
 golang.org/x/sys/unix
-# maunium.net/go/mautrix v0.19.0
-## explicit; go 1.21
+# maunium.net/go/mautrix v0.20.0
+## explicit; go 1.22
 maunium.net/go/mautrix
 maunium.net/go/mautrix/crypto/aescbc
 maunium.net/go/mautrix/crypto/attachment
