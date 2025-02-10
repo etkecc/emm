@@ -91,6 +91,10 @@ type ReqLogin struct {
 	StoreHomeserverURL bool `json:"-"`
 }
 
+type ReqPutDevice struct {
+	DisplayName string `json:"display_name,omitempty"`
+}
+
 type ReqUIAuthFallback struct {
 	Session string `json:"session"`
 	User    string `json:"user"`
@@ -140,6 +144,16 @@ type ReqMembers struct {
 	NotMembership event.Membership `json:"not_membership,omitempty"`
 }
 
+type ReqJoinRoom struct {
+	Via              []string `json:"-"`
+	Reason           string   `json:"reason,omitempty"`
+	ThirdPartySigned any      `json:"third_party_signed,omitempty"`
+}
+
+type ReqMutualRooms struct {
+	From string `json:"-"`
+}
+
 // ReqInvite3PID is the JSON request for https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3roomsroomidinvite-1
 // It is also a JSON object used in https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3createroom
 type ReqInvite3PID struct {
@@ -183,7 +197,8 @@ type ReqTyping struct {
 }
 
 type ReqPresence struct {
-	Presence event.Presence `json:"presence"`
+	Presence  event.Presence `json:"presence"`
+	StatusMsg string         `json:"status_msg,omitempty"`
 }
 
 type ReqAliasCreate struct {

@@ -1,3 +1,61 @@
+## v0.23.0 (2025-01-16)
+
+* **Breaking change *(client)*** Changed `JoinRoom` parameters to allow multiple
+  `via`s.
+* **Breaking change *(bridgev2)*** Updated capability system.
+  * The return type of `NetworkAPI.GetCapabilities` is now different.
+  * Media type capabilities are enforced automatically by bridgev2.
+  * Capabilities are now sent to Matrix rooms using the
+    `com.beeper.room_features` state event.
+* *(client)* Added `GetRoomSummary` to implement [MSC3266].
+* *(client)* Added support for arbitrary profile fields to implement [MSC4133]
+  (thanks to [@nexy7574] in [#337]).
+* *(crypto)* Started storing olm message hashes to prevent decryption errors
+  if messages are repeated (e.g. if the app crashes right after decrypting).
+* *(crypto)* Improved olm session unwedging to check when the last session was
+  created instead of only relying on an in-memory map.
+* *(crypto/verificationhelper)* Fixed emoji verification not doing cross-signing
+  properly after a successful verification.
+* *(bridgev2/config)* Moved MSC4190 flag from `appservice` to `encryption`.
+* *(bridgev2/space)* Fixed failing to add rooms to spaces if the room create
+  call was made with a temporary context.
+* *(bridgev2/commands)* Changed `help` command to hide commands which require
+  interfaces that aren't implemented by the network connector.
+* *(bridgev2/matrixinterface)* Moved deterministic room ID generation to Matrix
+  connector.
+* *(bridgev2)* Fixed service member state event not being set correctly when
+  creating a DM by inviting a ghost user.
+* *(bridgev2)* Fixed `RemoteReactionSync` events replacing all reactions every
+  time instead of only changed ones.
+
+[MSC3266]: https://github.com/matrix-org/matrix-spec-proposals/pull/3266
+[MSC4133]: https://github.com/matrix-org/matrix-spec-proposals/pull/4133
+[@nexy7574]: https://github.com/nexy7574
+[#337]: https://github.com/mautrix/go/pull/337
+
+## v0.22.1 (2024-12-16)
+
+* *(crypto)* Added automatic cleanup when there are too many olm sessions with
+  a single device.
+* *(crypto)* Added helper for getting cached device list with cross-signing
+  status.
+* *(crypto/verificationhelper)* Added interface for persisting the state of
+  in-progress verifications.
+* *(client)* Added `GetMutualRooms` wrapper for [MSC2666].
+* *(client)* Switched `JoinRoom` to use the `via` query param instead of
+  `server_name` as per [MSC4156].
+* *(bridgev2/commands)* Fixed `pm` command not actually starting the chat.
+* *(bridgev2/interface)* Added separate network API interface for starting
+  chats with a Matrix ghost user. This allows treating internal user IDs
+  differently than arbitrary user-input strings.
+* *(bridgev2/crypto)* Added support for [MSC4190]
+  (thanks to [@onestacked] in [#288]).
+
+[MSC2666]: https://github.com/matrix-org/matrix-spec-proposals/pull/2666
+[MSC4156]: https://github.com/matrix-org/matrix-spec-proposals/pull/4156
+[MSC4190]: https://github.com/matrix-org/matrix-spec-proposals/pull/4190
+[#288]: https://github.com/mautrix/go/pull/288
+
 ## v0.22.0 (2024-11-16)
 
 * *(hicli)* Moved package into gomuks repo.
