@@ -1,7 +1,7 @@
 ---
 id: '{{ .ID }}'
 date: '{{ .CreatedAt }}'
-title: '{{ .CreatedAt }}'
+title: '{{ .Title }}{{ .ReplacedNote }}'
 author: '{{ .Author }}'
 draft: false
 ---

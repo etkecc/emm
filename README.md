@@ -7,7 +7,7 @@ A CLI tool that joins the room and exports last N messages to the file you speci
 * Get messages from any matrix room with pagination (if limit greather than page, to prevent timeout errors) or without it (if limit less or equals page)
 * Export messages to one file for all messages
 * Export each message in separate file
-* Custom templates supported (`contrib` contains an example of hugo post template, [etke.cc/webite](https://gitlab.com/etke.cc/website) can be used as reference)
+* Custom templates supported (`contrib` contains an example of hugo post template, [etke.cc/news](https://etke.cc/news) can be used as reference)
 * Delegation and aliases supported
 * `Anyone`/`world_readable` access supported without invite
 
@@ -15,7 +15,7 @@ A CLI tool that joins the room and exports last N messages to the file you speci
 
 ### Full example
 
-That's how [etke.cc/website](https://gitlab.com/etke.cc/website) news generated
+That's how [etke.cc/news](https://etke.cc/news) generated
 
 ```bash
 emm -hs hs.url -u user -p pass -r "#room:hs.url" -t contrib/hugo-post-template.md -o /tmp/%s.md

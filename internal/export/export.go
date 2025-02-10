@@ -9,6 +9,7 @@ import (
 // DefaultTemplate text
 const DefaultTemplate = `
 id={{ .ID }}
+title={{ .Title }}
 replace={{ .Replace }}
 author={{ .Author }}
 text={{ .Text }}

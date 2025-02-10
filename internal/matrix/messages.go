@@ -3,6 +3,7 @@ package matrix
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"maunium.net/go/mautrix"
@@ -23,6 +24,8 @@ type Message struct {
 	ReplacedNote string
 	// Author is a matrix id of the sender
 	Author id.UserID
+	// Title is a message title (first line of the message)
+	Title string
 	// Text is the message body in plaintext/markdown format
 	Text string
 	// HTML is the message body in html format
@@ -174,13 +177,32 @@ func parseMessage(evt *event.Event) *Message {
 	}
 
 	createdAt := time.UnixMilli(evt.Timestamp).UTC()
+	title := createdAt.Format("2006-01-02 15:04 MST")
+	if strings.Contains(text, "\n") {
+		title = sanitizeTitle(strings.Split(text, "\n")[0])
+	}
+
 	return &Message{
 		ID:            evt.ID,
 		Replace:       replace,
 		Author:        evt.Sender,
+		Title:         title,
 		Text:          text,
 		HTML:          html,
 		CreatedAt:     createdAt.Format("2006-01-02 15:04 MST"),
 		CreatedAtFull: createdAt,
 	}
+}
+
+func sanitizeTitle(text string) string {
+	prefixes := []string{"> ", "# ", "```", "~~", "| ", "* ", "- ", "+ ", "1. ", "1) "}
+	kws := []string{"**", "__", "`", "```", "~~", "||", "'"}
+	for _, prefix := range prefixes {
+		text = strings.TrimPrefix(text, prefix)
+	}
+	for _, kw := range kws {
+		text = strings.ReplaceAll(text, kw, "")
+	}
+
+	return text
 }
