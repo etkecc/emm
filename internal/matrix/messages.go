@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/etkecc/emm/internal/utils"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -18,6 +19,8 @@ const Page = 100
 type Message struct {
 	// ID is a matrix event id of the message
 	ID id.EventID
+	// URLSafeID is a url-safe version of the ID
+	URLSafeID string
 	// Replace is a matrix ID of old (replaced) event
 	Replace id.EventID
 	// ReplacedNote is a text note usable from template to mark replaced message as updated
@@ -44,11 +47,27 @@ var (
 	}
 )
 
+func (m *Message) Vars() map[string]string {
+	return map[string]string{
+		"ID":            string(m.ID),
+		"URLSafeID":     m.URLSafeID,
+		"Replace":       string(m.Replace),
+		"ReplacedNote":  m.ReplacedNote,
+		"Author":        string(m.Author),
+		"Title":         m.Title,
+		"Text":          m.Text,
+		"HTML":          m.HTML,
+		"CreatedAtDate": m.CreatedAtFull.Format(time.DateOnly),
+		"CreatedAt":     m.CreatedAt,
+		"CreatedAtFull": m.CreatedAtFull.String(),
+	}
+}
+
 // Messages of the room
 // Note on limit - the output slice may be less size than limit you sent in the following cases:
 // * room contains less messages than limit
 // * some room messages don't contain body/formatted body
-func Messages(limit int) ([]*Message, error) {
+func Messages(limit int) (map[id.EventID]*Message, error) {
 	var err error
 	msgmap = make(map[id.EventID]*Message, 0)
 	if limit > Page {
@@ -60,13 +79,9 @@ func Messages(limit int) ([]*Message, error) {
 		return nil, err
 	}
 
-	messages := make([]*Message, 0, len(msgmap))
-	for _, message := range msgmap {
-		messages = append(messages, message)
-	}
-	log.Println("loaded", len(messages), "messages total")
+	log.Println("loaded", len(msgmap), "messages total")
 
-	return messages, nil
+	return msgmap, nil
 }
 
 func paginate(limit int) error {
@@ -184,6 +199,7 @@ func parseMessage(evt *event.Event) *Message {
 
 	return &Message{
 		ID:            evt.ID,
+		URLSafeID:     utils.MakeURLSafe(string(evt.ID)),
 		Replace:       replace,
 		Author:        evt.Sender,
 		Title:         title,
