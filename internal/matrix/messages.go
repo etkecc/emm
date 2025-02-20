@@ -211,7 +211,7 @@ func parseMessage(evt *event.Event) *Message {
 }
 
 func sanitizeTitle(text string) string {
-	prefixes := []string{"> ", "# ", "```", "~~", "| ", "* ", "- ", "+ ", "1. ", "1) "}
+	prefixes := []string{"> ", "# ", "## ", "### ", "#### ", "```", "~~", "| ", "* ", "- ", "+ ", "1. ", "1) "}
 	kws := []string{"**", "__", "`", "```", "~~", "||", "'"}
 	for _, prefix := range prefixes {
 		text = strings.TrimPrefix(text, prefix)
