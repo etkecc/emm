@@ -67,13 +67,17 @@ func (m *Message) Vars() map[string]string {
 // Note on limit - the output slice may be less size than limit you sent in the following cases:
 // * room contains less messages than limit
 // * some room messages don't contain body/formatted body
-func Messages(limit int) (map[id.EventID]*Message, error) {
+func Messages(limit int, since time.Time) (map[id.EventID]*Message, error) {
 	var err error
+	var sinceMS int64
+	if !since.IsZero() {
+		sinceMS = since.UnixMilli()
+	}
 	msgmap = make(map[id.EventID]*Message, 0)
 	if limit > Page {
-		err = paginate(limit)
+		err = paginate(limit, sinceMS)
 	} else {
-		err = load()
+		err = load(sinceMS)
 	}
 	if err != nil {
 		return nil, err
@@ -84,7 +88,7 @@ func Messages(limit int) (map[id.EventID]*Message, error) {
 	return msgmap, nil
 }
 
-func paginate(limit int) error {
+func paginate(limit int, sinceMS int64) error {
 	ctx := context.Background()
 	var token string
 	page := 1
@@ -105,7 +109,7 @@ func paginate(limit int) error {
 			break
 		}
 
-		processEvents(chunks)
+		processEvents(chunks, sinceMS)
 		token = chunks.End
 		if len(chunks.Chunk) < Page {
 			log.Println("it was the last page")
@@ -119,7 +123,7 @@ func paginate(limit int) error {
 	return nil
 }
 
-func load() error {
+func load(sinceMS int64) error {
 	ctx := context.Background()
 	var chunks *mautrix.RespMessages
 	log.Println("requesting messages from", room, "without pagination")
@@ -132,15 +136,19 @@ func load() error {
 	if err != nil {
 		return err
 	}
-	processEvents(chunks)
+	processEvents(chunks, sinceMS)
 	return nil
 }
 
-func processEvents(resp *mautrix.RespMessages) {
+func processEvents(resp *mautrix.RespMessages, sinceMS int64) {
 	log.Println("parsing messages chunk:", len(resp.Chunk), "events")
 	for _, evt := range resp.Chunk {
 		_, ignore := ignored[evt.Sender]
 		if ignore {
+			continue
+		}
+
+		if evt.Timestamp < sinceMS {
 			continue
 		}
 

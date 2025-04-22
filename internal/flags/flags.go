@@ -4,6 +4,7 @@ package flags
 import (
 	"errors"
 	"flag"
+	"time"
 
 	"maunium.net/go/mautrix/id"
 )
@@ -22,6 +23,10 @@ type Config struct {
 	RoomID id.RoomID
 	// RoomAlias
 	RoomAlias id.RoomAlias
+	// Since load only messages since this timestamp. Format (RFC3339): YYYY-MM-DDTHH:MM:SSZ, e.g. 2023-10-01T00:00:00Z
+	Since *string
+	// StartAt is a converted time.Time from Since
+	StartAt time.Time
 	// Ignore messages by following MXIDs
 	Ignore *string
 	// Limit of messages
@@ -33,14 +38,8 @@ type Config struct {
 }
 
 func (cfg *Config) validate() error {
-	if cfg.HS == nil || *cfg.HS == "" {
-		return errors.New("-hs is not set. You must specify homeserver URL")
-	}
-	if cfg.Login == nil || *cfg.Login == "" {
-		return errors.New("-u is not set. You must specify username/login of the matrix user")
-	}
-	if cfg.Password == nil || *cfg.Password == "" {
-		return errors.New("-p is not set. You must specify password of the matrix user")
+	if err := cfg.validateCredentials(); err != nil {
+		return err
 	}
 	if cfg.Room == nil || *cfg.Room == "" {
 		return errors.New("-r is not set. You must specify room id or alias")
@@ -57,6 +56,27 @@ func (cfg *Config) validate() error {
 		cfg.Template = &empty
 	}
 
+	if cfg.Since != nil && *cfg.Since != "" {
+		t, err := time.Parse(time.RFC3339, *cfg.Since)
+		if err != nil {
+			return errors.New("-s is not valid. Must be in RFC3339 format: YYYY-MM-DDTHH:MM:SSZ")
+		}
+		cfg.StartAt = t
+	}
+
+	return nil
+}
+
+func (cfg *Config) validateCredentials() error {
+	if cfg.HS == nil || *cfg.HS == "" {
+		return errors.New("-hs is not set. You must specify homeserver URL")
+	}
+	if cfg.Login == nil || *cfg.Login == "" {
+		return errors.New("-u is not set. You must specify username/login of the matrix user")
+	}
+	if cfg.Password == nil || *cfg.Password == "" {
+		return errors.New("-p is not set. You must specify password of the matrix user")
+	}
 	return nil
 }
 
@@ -69,6 +89,7 @@ func Parse() (*Config, error) {
 		Room:     flag.String("r", "", "Room ID or alias"),
 		Limit:    flag.Int("l", 0, "Messages limit"),
 		Ignore:   flag.String("i", "", "Ignore messages by following MXIDs, separated by comma"),
+		Since:    flag.String("s", "", "Load messages since this timestamp. Format (RFC3339): YYYY-MM-DDTHH:MM:SSZ, e.g. 2023-10-01T00:00:00Z"),
 		Template: flag.String("t", "", "Template file. Default is JSON message struct"),
 		Output:   flag.String("o", "", "Output filename. If it contains %s, it will be replaced with event ID (one message per file)"),
 	}

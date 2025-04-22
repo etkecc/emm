@@ -38,6 +38,8 @@ Usage of emm:
     	Password of the matrix user
   -r string
     	Room ID or alias
+  -s string
+    	Load messages since this timestamp. Format (RFC3339): YYYY-MM-DDTHH:MM:SSZ, e.g. 2023-10-01T00:00:00Z
   -t string
     	Template file. Default is JSON message struct
   -u string
