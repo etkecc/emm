@@ -9,11 +9,19 @@ import (
 	"github.com/etkecc/emm/internal/utils"
 )
 
-var outputFileSingle *os.File
+var (
+	outputFileSingle *os.File
+	outputCreate     = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	outputAppend     = os.O_WRONLY | os.O_CREATE | os.O_APPEND
+)
 
-func getOutput(output string, vars map[string]string) (*os.File, error) {
+func getOutput(output string, vars map[string]string, appendMode bool) (*os.File, error) {
 	if isMulti(output) {
-		return getOutputMulti(output, vars)
+		mode := outputCreate
+		if appendMode {
+			mode = outputAppend
+		}
+		return getOutputMulti(output, vars, mode)
 	}
 
 	return getOutputSingle(output)
@@ -27,13 +35,13 @@ func isMulti(output string) bool {
 func getOutputSingle(output string) (*os.File, error) {
 	var err error
 	if outputFileSingle == nil {
-		outputFileSingle, err = os.OpenFile(output, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+		outputFileSingle, err = os.OpenFile(output, outputAppend, 0o644)
 	}
 
 	return outputFileSingle, err
 }
 
-func getOutputMulti(output string, vars map[string]string) (*os.File, error) {
+func getOutputMulti(output string, vars map[string]string, permissions int) (*os.File, error) {
 	// old mode, where %s is used
 	if strings.Contains(output, "%s") {
 		output = strings.ReplaceAll(output, "%s", vars["ID"])
@@ -46,7 +54,7 @@ func getOutputMulti(output string, vars map[string]string) (*os.File, error) {
 		}
 		output = parsed
 	}
-	return os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	return os.OpenFile(output, permissions, 0o644)
 }
 
 // parseTemplate parse template with vars

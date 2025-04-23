@@ -24,10 +24,17 @@ emm -hs hs.url -u user -p pass -r "#room:hs.url" -t contrib/hugo-post-template.m
 emm -hs hs.url -u user -p pass -r "#room:hs.url" -t contrib/hugo-post-template.md -o /tmp/{{ .CreatedAtDate }}.md
 ```
 
+> **NOTE**: we at [etke.cc](https://etke.cc) do not spam customers with messages, attempting to be as less annoying as possible,
+> so we send about 1-2 messages **per week**.
+> If you are sending more than 1 message per day, the `{{ .CreatedAtDate }}` will not work as expected,
+> because it will store only a single message per file. Instead, you can either use other template variables (see below),
+> or use `-a` flag to append messages to the same file.
+
 ### Documentation
 
 ```bash
 Usage of emm:
+  -a	Append to the output file. Useful when you are using multi output mode, but want to have multiple messages in a single file
   -hs string
     	Homeserver URL (supports delegation)
   -l int

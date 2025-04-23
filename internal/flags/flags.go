@@ -29,6 +29,8 @@ type Config struct {
 	StartAt time.Time
 	// Ignore messages by following MXIDs
 	Ignore *string
+	// Append enforces appending to the output file, useful when you are using multi output mode, but want to have multiple messages in a single file
+	Append *bool
 	// Limit of messages
 	Limit *int
 	// Template file
@@ -54,6 +56,11 @@ func (cfg *Config) validate() error {
 	if cfg.Template == nil {
 		empty := ""
 		cfg.Template = &empty
+	}
+
+	if cfg.Append == nil {
+		appendVal := false
+		cfg.Append = &appendVal
 	}
 
 	if cfg.Since != nil && *cfg.Since != "" {
@@ -88,6 +95,7 @@ func Parse() (*Config, error) {
 		Password: flag.String("p", "", "Password of the matrix user"),
 		Room:     flag.String("r", "", "Room ID or alias"),
 		Limit:    flag.Int("l", 0, "Messages limit"),
+		Append:   flag.Bool("a", false, "Append to the output file. Useful when you are using multi output mode, but want to have multiple messages in a single file"),
 		Ignore:   flag.String("i", "", "Ignore messages by following MXIDs, separated by comma"),
 		Since:    flag.String("s", "", "Load messages since this timestamp. Format (RFC3339): YYYY-MM-DDTHH:MM:SSZ, e.g. 2023-10-01T00:00:00Z"),
 		Template: flag.String("t", "", "Template file. Default is JSON message struct"),

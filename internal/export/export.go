@@ -22,7 +22,7 @@ created_at_full={{ .CreatedAtFull }}
 `
 
 // Run export
-func Run(templatePath, output string, messages map[id.EventID]*matrix.Message) error {
+func Run(templatePath, output string, messages map[id.EventID]*matrix.Message, appendMode bool) error {
 	templatedOutput := strings.Contains(output, "{{")
 	tpl, err := createTemplate(templatePath)
 	if err != nil {
@@ -31,9 +31,9 @@ func Run(templatePath, output string, messages map[id.EventID]*matrix.Message) e
 	for _, message := range messages {
 		// edge case for templated output: if the message is a replacement, we need to actually replace the original message
 		if message.Replace != "" && messages[message.Replace] != nil && templatedOutput {
-			err = save(tpl, output, message, messages[message.Replace])
+			err = save(tpl, output, message, messages[message.Replace], appendMode)
 		} else {
-			err = save(tpl, output, message, nil)
+			err = save(tpl, output, message, nil, appendMode)
 		}
 		if err != nil {
 			return err
@@ -43,13 +43,13 @@ func Run(templatePath, output string, messages map[id.EventID]*matrix.Message) e
 	return nil
 }
 
-func save(tpl *template.Template, path string, message, replaces *matrix.Message) error {
+func save(tpl *template.Template, path string, message, replaces *matrix.Message, appendMode bool) error {
 	var file *os.File
 	var err error
 	if replaces != nil {
-		file, err = getOutput(path, replaces.Vars())
+		file, err = getOutput(path, replaces.Vars(), appendMode)
 	} else {
-		file, err = getOutput(path, message.Vars())
+		file, err = getOutput(path, message.Vars(), appendMode)
 	}
 	if err != nil {
 		return err

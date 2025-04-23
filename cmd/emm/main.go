@@ -33,7 +33,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	err = export.Run(*cfg.Template, *cfg.Output, messages)
+	err = export.Run(*cfg.Template, *cfg.Output, messages, *cfg.Append)
 	if err != nil {
 		panic(err)
 	}
