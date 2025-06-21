@@ -2,6 +2,7 @@ package export
 
 import (
 	"os"
+	"sort"
 	"strings"
 	"text/template"
 
@@ -21,6 +22,18 @@ created_at={{ .CreatedAt }}
 created_at_full={{ .CreatedAtFull }}
 `
 
+func getSlice(messages map[id.EventID]*matrix.Message) []*matrix.Message {
+	slice := make([]*matrix.Message, 0, len(messages))
+	for _, message := range messages {
+		slice = append(slice, message)
+	}
+	// ensure sort is always stable
+	sort.Slice(slice, func(i, j int) bool {
+		return slice[i].CreatedAtFull.Before(slice[j].CreatedAtFull)
+	})
+	return slice
+}
+
 // Run export
 func Run(templatePath, output string, messages map[id.EventID]*matrix.Message, appendMode bool) error {
 	templatedOutput := strings.Contains(output, "{{")
@@ -28,7 +41,8 @@ func Run(templatePath, output string, messages map[id.EventID]*matrix.Message, a
 	if err != nil {
 		return err
 	}
-	for _, message := range messages {
+
+	for _, message := range getSlice(messages) {
 		// edge case for templated output: if the message is a replacement, we need to actually replace the original message
 		if message.Replace != "" && messages[message.Replace] != nil && templatedOutput {
 			err = save(tpl, output, message, messages[message.Replace], appendMode)
