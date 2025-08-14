@@ -40,12 +40,14 @@ func main() {
 }
 
 func resolve() {
-	log.Println("resolving homeserver...")
-	hs, err := matrix.ResolveServer(*cfg.HS)
-	if err != nil {
-		panic(err)
+	if cfg.NoDelegation == nil || !*cfg.NoDelegation {
+		log.Println("resolving homeserver...")
+		hs, err := matrix.ResolveServer(*cfg.HS)
+		if err != nil {
+			panic(err)
+		}
+		cfg.HS = &hs
 	}
-	cfg.HS = &hs
 
 	log.Println("resolving room type...")
 	alias, err := matrix.IsRoom(*cfg.Room)

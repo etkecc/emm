@@ -8,7 +8,7 @@ A CLI tool that joins the room and exports last N messages to the file you speci
 * Export messages to one file for all messages
 * Export each message in separate file
 * Custom templates supported (`contrib` contains an example of hugo post template, [etke.cc/news](https://etke.cc/news) can be used as reference)
-* Delegation and aliases supported
+* Delegation and aliases supported (optional)
 * `Anyone`/`world_readable` access supported without invite
 
 ## Usage
@@ -37,10 +37,14 @@ Usage of emm:
   -a	Append to the output file. Useful when you are using multi output mode, but want to have multiple messages in a single file
   -hs string
     	Homeserver URL (supports delegation)
+  -i string
+    	Ignore messages by following MXIDs, separated by comma
   -l int
     	Messages limit
+  -no-delegation
+    	Disable /.well-known delegation support
   -o string
-    	Output filename. If it contains %s, it will be replaced with event ID (one message per file, old way), or you can use Go template syntax to use all fields (new way)
+    	Output filename. If it contains %s, it will be replaced with event ID (one message per file)
   -p string
     	Password of the matrix user
   -r string

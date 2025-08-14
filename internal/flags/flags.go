@@ -13,6 +13,8 @@ import (
 type Config struct {
 	// HS is matrix homeserver (supports delegation)
 	HS *string
+	// NoDelegation disables /.well-known delegation support
+	NoDelegation *bool
 	// Login is matrix user login
 	Login *string
 	// Password is matrix user password
@@ -90,16 +92,17 @@ func (cfg *Config) validateCredentials() error {
 // Parse command line arguments and flags
 func Parse() (*Config, error) {
 	cfg := &Config{
-		HS:       flag.String("hs", "", "Homeserver URL (supports delegation)"),
-		Login:    flag.String("u", "", "Username/Login of the matrix user"),
-		Password: flag.String("p", "", "Password of the matrix user"),
-		Room:     flag.String("r", "", "Room ID or alias"),
-		Limit:    flag.Int("l", 0, "Messages limit"),
-		Append:   flag.Bool("a", false, "Append to the output file. Useful when you are using multi output mode, but want to have multiple messages in a single file"),
-		Ignore:   flag.String("i", "", "Ignore messages by following MXIDs, separated by comma"),
-		Since:    flag.String("s", "", "Load messages since this timestamp. Format (RFC3339): YYYY-MM-DDTHH:MM:SSZ, e.g. 2023-10-01T00:00:00Z"),
-		Template: flag.String("t", "", "Template file. Default is JSON message struct"),
-		Output:   flag.String("o", "", "Output filename. If it contains %s, it will be replaced with event ID (one message per file)"),
+		HS:           flag.String("hs", "", "Homeserver URL (supports delegation)"),
+		NoDelegation: flag.Bool("no-delegation", false, "Disable /.well-known delegation support"),
+		Login:        flag.String("u", "", "Username/Login of the matrix user"),
+		Password:     flag.String("p", "", "Password of the matrix user"),
+		Room:         flag.String("r", "", "Room ID or alias"),
+		Limit:        flag.Int("l", 0, "Messages limit"),
+		Append:       flag.Bool("a", false, "Append to the output file. Useful when you are using multi output mode, but want to have multiple messages in a single file"),
+		Ignore:       flag.String("i", "", "Ignore messages by following MXIDs, separated by comma"),
+		Since:        flag.String("s", "", "Load messages since this timestamp. Format (RFC3339): YYYY-MM-DDTHH:MM:SSZ, e.g. 2023-10-01T00:00:00Z"),
+		Template:     flag.String("t", "", "Template file. Default is JSON message struct"),
+		Output:       flag.String("o", "", "Output filename. If it contains %s, it will be replaced with event ID (one message per file)"),
 	}
 	flag.Parse()
 	err := cfg.validate()
