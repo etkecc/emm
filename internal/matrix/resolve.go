@@ -33,10 +33,6 @@ func IsRoom(room string) (bool, error) {
 		return false, errors.New("room is not set")
 	}
 
-	if strings.LastIndex(room, ":") == -1 {
-		return false, errors.New("not a valid room id or alias")
-	}
-
 	if strings.HasPrefix(room, "#") {
 		return true, nil
 	}
@@ -48,8 +44,8 @@ func IsRoom(room string) (bool, error) {
 	return false, errors.New("not a valid room id or alias")
 }
 
-// resolveAlias resolves room alias to a room ID
-func resolveAlias(alias id.RoomAlias) (id.RoomID, error) {
+// ResolveAlias resolves room alias to a room ID
+func ResolveAlias(alias id.RoomAlias) (id.RoomID, error) {
 	var resp *mautrix.RespAliasResolve
 	err := retry(func() error {
 		var resolveErr error

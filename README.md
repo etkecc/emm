@@ -47,8 +47,8 @@ Usage of emm:
     	Output filename. If it contains %s, it will be replaced with event ID (one message per file)
   -p string
     	Password of the matrix user
-  -r string
-    	Room ID or alias
+  -r value
+    	Room ID or alias, you can add multiple rooms with this flag, e.g. -r #room1:example.com -r !pHSBxS_8cAoZXw63TskCZ4W5Ea1_LYn9kOlL9zPt0Vk
   -s string
     	Load messages since this timestamp. Format (RFC3339): YYYY-MM-DDTHH:MM:SSZ, e.g. 2023-10-01T00:00:00Z
   -t string

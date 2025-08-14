@@ -13,7 +13,7 @@ import (
 )
 
 // Page is a amount of messages per page
-const Page = 100
+const Page = 1000
 
 // Message struct
 type Message struct {
@@ -67,7 +67,7 @@ func (m *Message) Vars() map[string]string {
 // Note on limit - the output slice may be less size than limit you sent in the following cases:
 // * room contains less messages than limit
 // * some room messages don't contain body/formatted body
-func Messages(limit int, since time.Time) (map[id.EventID]*Message, error) {
+func Messages(roomID id.RoomID, limit int, since time.Time) (map[id.EventID]*Message, error) {
 	var err error
 	var sinceMS int64
 	if !since.IsZero() {
@@ -75,9 +75,9 @@ func Messages(limit int, since time.Time) (map[id.EventID]*Message, error) {
 	}
 	msgmap = make(map[id.EventID]*Message, 0)
 	if limit > Page {
-		err = paginate(limit, sinceMS)
+		err = paginate(roomID, limit, sinceMS)
 	} else {
-		err = load(sinceMS)
+		err = load(roomID, sinceMS)
 	}
 	if err != nil {
 		return nil, err
@@ -88,16 +88,16 @@ func Messages(limit int, since time.Time) (map[id.EventID]*Message, error) {
 	return msgmap, nil
 }
 
-func paginate(limit int, sinceMS int64) error {
+func paginate(roomID id.RoomID, limit int, sinceMS int64) error {
 	ctx := context.Background()
 	var token string
 	page := 1
 	for i := Page; i < limit; {
 		var chunks *mautrix.RespMessages
-		log.Println("requesting messages from", room, "page =", page)
+		log.Println("requesting messages from", roomID, "page =", page)
 		err := retry(func() error {
 			var messagesErr error
-			chunks, messagesErr = client.Messages(ctx, room, token, "", 'b', filter, Page)
+			chunks, messagesErr = client.Messages(ctx, roomID, token, "", 'b', filter, Page)
 
 			return messagesErr
 		})
@@ -123,13 +123,13 @@ func paginate(limit int, sinceMS int64) error {
 	return nil
 }
 
-func load(sinceMS int64) error {
+func load(roomID id.RoomID, sinceMS int64) error {
 	ctx := context.Background()
 	var chunks *mautrix.RespMessages
-	log.Println("requesting messages from", room, "without pagination")
+	log.Println("requesting messages from", roomID, "without pagination")
 	err := retry(func() error {
 		var messagesErr error
-		chunks, messagesErr = client.Messages(ctx, room, "", "", 'b', filter, Page)
+		chunks, messagesErr = client.Messages(ctx, roomID, "", "", 'b', filter, Page)
 
 		return messagesErr
 	})

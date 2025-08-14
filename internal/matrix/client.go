@@ -2,6 +2,7 @@ package matrix
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -18,13 +19,12 @@ const RetryDelay = 10 * time.Second
 
 var (
 	client     *mautrix.Client
-	room       id.RoomID
 	ignored    map[id.UserID]struct{}
 	retriables = []string{"429", "502", "504"}
 )
 
 // Init matrix client
-func Init(hs, login, password string, roomID id.RoomID, alias id.RoomAlias, ignore string) error {
+func Init(hs, login, password, ignore string) error {
 	var err error
 	client, err = mautrix.NewClient(hs, "", "")
 	if err != nil {
@@ -41,20 +41,15 @@ func Init(hs, login, password string, roomID id.RoomID, alias id.RoomAlias, igno
 			Password:         password,
 			StoreCredentials: true,
 		})
+		if loginErr != nil {
+			fmt.Println("login error:", loginErr.Error())
+		}
 		return loginErr
 	})
 	if err != nil {
 		return err
 	}
 
-	if roomID == "" {
-		log.Println("resolving room alias...")
-		roomID, err = resolveAlias(alias)
-		if err != nil {
-			return err
-		}
-	}
-	room = roomID
 	resolveIgnored(ignore)
 
 	return nil
