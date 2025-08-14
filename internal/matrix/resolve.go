@@ -15,6 +15,13 @@ func ResolveServer(homeserver string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	if discover == nil {
+		return homeserver, nil
+	}
+	if discover.Homeserver.BaseURL == "" {
+		return homeserver, nil
+	}
 	return discover.Homeserver.BaseURL, nil
 }
 
