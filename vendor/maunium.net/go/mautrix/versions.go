@@ -60,20 +60,25 @@ type UnstableFeature struct {
 }
 
 var (
-	FeatureAsyncUploads        = UnstableFeature{UnstableFlag: "fi.mau.msc2246.stable", SpecVersion: SpecV17}
-	FeatureAppservicePing      = UnstableFeature{UnstableFlag: "fi.mau.msc2659.stable", SpecVersion: SpecV17}
-	FeatureAuthenticatedMedia  = UnstableFeature{UnstableFlag: "org.matrix.msc3916.stable", SpecVersion: SpecV111}
-	FeatureMutualRooms         = UnstableFeature{UnstableFlag: "uk.half-shot.msc2666.query_mutual_rooms"}
-	FeatureUserRedaction       = UnstableFeature{UnstableFlag: "org.matrix.msc4194"}
-	FeatureViewRedactedContent = UnstableFeature{UnstableFlag: "fi.mau.msc2815"}
+	FeatureAsyncUploads           = UnstableFeature{UnstableFlag: "fi.mau.msc2246.stable", SpecVersion: SpecV17}
+	FeatureAppservicePing         = UnstableFeature{UnstableFlag: "fi.mau.msc2659.stable", SpecVersion: SpecV17}
+	FeatureAuthenticatedMedia     = UnstableFeature{UnstableFlag: "org.matrix.msc3916.stable", SpecVersion: SpecV111}
+	FeatureMutualRooms            = UnstableFeature{UnstableFlag: "uk.half-shot.msc2666.query_mutual_rooms"}
+	FeatureUserRedaction          = UnstableFeature{UnstableFlag: "org.matrix.msc4194"}
+	FeatureViewRedactedContent    = UnstableFeature{UnstableFlag: "fi.mau.msc2815"}
+	FeatureAccountModeration      = UnstableFeature{UnstableFlag: "uk.timedout.msc4323"}
+	FeatureUnstableProfileFields  = UnstableFeature{UnstableFlag: "uk.tcpip.msc4133"}
+	FeatureArbitraryProfileFields = UnstableFeature{UnstableFlag: "uk.tcpip.msc4133.stable", SpecVersion: SpecV116}
+	FeatureRedactSendAsEvent      = UnstableFeature{UnstableFlag: "com.beeper.msc4169"}
 
-	BeeperFeatureHungry               = UnstableFeature{UnstableFlag: "com.beeper.hungry"}
-	BeeperFeatureBatchSending         = UnstableFeature{UnstableFlag: "com.beeper.batch_sending"}
-	BeeperFeatureRoomYeeting          = UnstableFeature{UnstableFlag: "com.beeper.room_yeeting"}
-	BeeperFeatureAutojoinInvites      = UnstableFeature{UnstableFlag: "com.beeper.room_create_autojoin_invites"}
-	BeeperFeatureArbitraryProfileMeta = UnstableFeature{UnstableFlag: "com.beeper.arbitrary_profile_meta"}
-	BeeperFeatureAccountDataMute      = UnstableFeature{UnstableFlag: "com.beeper.account_data_mute"}
-	BeeperFeatureInboxState           = UnstableFeature{UnstableFlag: "com.beeper.inbox_state"}
+	BeeperFeatureHungry                = UnstableFeature{UnstableFlag: "com.beeper.hungry"}
+	BeeperFeatureBatchSending          = UnstableFeature{UnstableFlag: "com.beeper.batch_sending"}
+	BeeperFeatureRoomYeeting           = UnstableFeature{UnstableFlag: "com.beeper.room_yeeting"}
+	BeeperFeatureAutojoinInvites       = UnstableFeature{UnstableFlag: "com.beeper.room_create_autojoin_invites"}
+	BeeperFeatureArbitraryProfileMeta  = UnstableFeature{UnstableFlag: "com.beeper.arbitrary_profile_meta"}
+	BeeperFeatureAccountDataMute       = UnstableFeature{UnstableFlag: "com.beeper.account_data_mute"}
+	BeeperFeatureInboxState            = UnstableFeature{UnstableFlag: "com.beeper.inbox_state"}
+	BeeperFeatureArbitraryMemberChange = UnstableFeature{UnstableFlag: "com.beeper.arbitrary_member_change"}
 )
 
 func (versions *RespVersions) Supports(feature UnstableFeature) bool {
@@ -117,6 +122,7 @@ var (
 	SpecV113 = MustParseSpecVersion("v1.13")
 	SpecV114 = MustParseSpecVersion("v1.14")
 	SpecV115 = MustParseSpecVersion("v1.15")
+	SpecV116 = MustParseSpecVersion("v1.16")
 )
 
 func (svf SpecVersionFormat) String() string {

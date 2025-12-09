@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -110,6 +111,8 @@ type Client struct {
 	// Set to true to disable automatically sleeping on 429 errors.
 	IgnoreRateLimit bool
 
+	ResponseSizeLimit int64
+
 	txnID int32
 
 	// Should the ?user_id= query parameter be set in requests?
@@ -139,6 +142,12 @@ type IdentityServerInfo struct {
 // Use ParseUserID to extract the server name from a user ID.
 // https://spec.matrix.org/v1.2/client-server-api/#server-discovery
 func DiscoverClientAPI(ctx context.Context, serverName string) (*ClientWellKnown, error) {
+	return DiscoverClientAPIWithClient(ctx, &http.Client{Timeout: 30 * time.Second}, serverName)
+}
+
+const WellKnownMaxSize = 64 * 1024
+
+func DiscoverClientAPIWithClient(ctx context.Context, client *http.Client, serverName string) (*ClientWellKnown, error) {
 	wellKnownURL := url.URL{
 		Scheme: "https",
 		Host:   serverName,
@@ -150,10 +159,11 @@ func DiscoverClientAPI(ctx context.Context, serverName string) (*ClientWellKnown
 		return nil, err
 	}
 
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", DefaultUserAgent+" (.well-known fetcher)")
+	if runtime.GOOS != "js" {
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", DefaultUserAgent+" (.well-known fetcher)")
+	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -162,11 +172,15 @@ func DiscoverClientAPI(ctx context.Context, serverName string) (*ClientWellKnown
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, nil
+	} else if resp.ContentLength > WellKnownMaxSize {
+		return nil, errors.New(".well-known response too large")
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, WellKnownMaxSize))
 	if err != nil {
 		return nil, err
+	} else if len(data) >= WellKnownMaxSize {
+		return nil, errors.New(".well-known response too large")
 	}
 
 	var wellKnown ClientWellKnown
@@ -317,6 +331,7 @@ const (
 	LogBodyContextKey contextKey = iota
 	LogRequestIDContextKey
 	MaxAttemptsContextKey
+	SyncTokenContextKey
 )
 
 func (cli *Client) RequestStart(req *http.Request) {
@@ -388,32 +403,43 @@ func (cli *Client) MakeRequest(ctx context.Context, method string, httpURL strin
 	return cli.MakeFullRequest(ctx, FullRequest{Method: method, URL: httpURL, RequestJSON: reqBody, ResponseJSON: resBody})
 }
 
-type ClientResponseHandler = func(req *http.Request, res *http.Response, responseJSON interface{}) ([]byte, error)
+type ClientResponseHandler = func(req *http.Request, res *http.Response, responseJSON any, sizeLimit int64) ([]byte, error)
 
 type FullRequest struct {
-	Method           string
-	URL              string
-	Headers          http.Header
-	RequestJSON      interface{}
-	RequestBytes     []byte
-	RequestBody      io.Reader
-	RequestLength    int64
-	ResponseJSON     interface{}
-	MaxAttempts      int
-	BackoffDuration  time.Duration
-	SensitiveContent bool
-	Handler          ClientResponseHandler
-	DontReadResponse bool
-	Logger           *zerolog.Logger
-	Client           *http.Client
+	Method            string
+	URL               string
+	Headers           http.Header
+	RequestJSON       interface{}
+	RequestBytes      []byte
+	RequestBody       io.Reader
+	RequestLength     int64
+	ResponseJSON      interface{}
+	MaxAttempts       int
+	BackoffDuration   time.Duration
+	SensitiveContent  bool
+	Handler           ClientResponseHandler
+	DontReadResponse  bool
+	ResponseSizeLimit int64
+	Logger            *zerolog.Logger
+	Client            *http.Client
 }
 
 var requestID int32
 var logSensitiveContent = os.Getenv("MAUTRIX_LOG_SENSITIVE_CONTENT") == "yes"
 
 func (params *FullRequest) compileRequest(ctx context.Context) (*http.Request, error) {
+	reqID := atomic.AddInt32(&requestID, 1)
+	logger := zerolog.Ctx(ctx)
+	if logger.GetLevel() == zerolog.Disabled || logger == zerolog.DefaultContextLogger {
+		logger = params.Logger
+	}
+	ctx = logger.With().
+		Int32("req_id", reqID).
+		Logger().WithContext(ctx)
+
 	var logBody any
-	reqBody := params.RequestBody
+	var reqBody io.Reader
+	var reqLen int64
 	if params.RequestJSON != nil {
 		jsonStr, err := json.Marshal(params.RequestJSON)
 		if err != nil {
@@ -428,12 +454,22 @@ func (params *FullRequest) compileRequest(ctx context.Context) (*http.Request, e
 			logBody = params.RequestJSON
 		}
 		reqBody = bytes.NewReader(jsonStr)
+		reqLen = int64(len(jsonStr))
 	} else if params.RequestBytes != nil {
 		logBody = fmt.Sprintf("<%d bytes>", len(params.RequestBytes))
 		reqBody = bytes.NewReader(params.RequestBytes)
-		params.RequestLength = int64(len(params.RequestBytes))
-	} else if params.RequestLength > 0 && params.RequestBody != nil {
-		logBody = fmt.Sprintf("<%d bytes>", params.RequestLength)
+		reqLen = int64(len(params.RequestBytes))
+	} else if params.RequestBody != nil {
+		logBody = "<unknown stream of bytes>"
+		reqLen = -1
+		if params.RequestLength > 0 {
+			logBody = fmt.Sprintf("<%d bytes>", params.RequestLength)
+			reqLen = params.RequestLength
+		} else if params.RequestLength == 0 {
+			zerolog.Ctx(ctx).Warn().
+				Msg("RequestBody passed without specifying request length")
+		}
+		reqBody = params.RequestBody
 		if rsc, ok := params.RequestBody.(io.ReadSeekCloser); ok {
 			// Prevent HTTP from closing the request body, it might be needed for retries
 			reqBody = nopCloseSeeker{rsc}
@@ -442,15 +478,8 @@ func (params *FullRequest) compileRequest(ctx context.Context) (*http.Request, e
 		params.RequestJSON = struct{}{}
 		logBody = params.RequestJSON
 		reqBody = bytes.NewReader([]byte("{}"))
+		reqLen = 2
 	}
-	reqID := atomic.AddInt32(&requestID, 1)
-	logger := zerolog.Ctx(ctx)
-	if logger.GetLevel() == zerolog.Disabled || logger == zerolog.DefaultContextLogger {
-		logger = params.Logger
-	}
-	ctx = logger.With().
-		Int32("req_id", reqID).
-		Logger().WithContext(ctx)
 	ctx = context.WithValue(ctx, LogBodyContextKey, logBody)
 	ctx = context.WithValue(ctx, LogRequestIDContextKey, int(reqID))
 	req, err := http.NewRequestWithContext(ctx, params.Method, params.URL, reqBody)
@@ -466,9 +495,7 @@ func (params *FullRequest) compileRequest(ctx context.Context) (*http.Request, e
 	if params.RequestJSON != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if params.RequestLength > 0 && params.RequestBody != nil {
-		req.ContentLength = params.RequestLength
-	}
+	req.ContentLength = reqLen
 	return req, nil
 }
 
@@ -513,14 +540,31 @@ func (cli *Client) MakeFullRequestWithResp(ctx context.Context, params FullReque
 			params.Handler = handleNormalResponse
 		}
 	}
-	req.Header.Set("User-Agent", cli.UserAgent)
+	if cli.UserAgent != "" {
+		req.Header.Set("User-Agent", cli.UserAgent)
+	}
 	if len(cli.AccessToken) > 0 {
 		req.Header.Set("Authorization", "Bearer "+cli.AccessToken)
+	}
+	if params.ResponseSizeLimit == 0 {
+		params.ResponseSizeLimit = cli.ResponseSizeLimit
+	}
+	if params.ResponseSizeLimit == 0 {
+		params.ResponseSizeLimit = DefaultResponseSizeLimit
 	}
 	if params.Client == nil {
 		params.Client = cli.Client
 	}
-	return cli.executeCompiledRequest(req, params.MaxAttempts-1, params.BackoffDuration, params.ResponseJSON, params.Handler, params.DontReadResponse, params.Client)
+	return cli.executeCompiledRequest(
+		req,
+		params.MaxAttempts-1,
+		params.BackoffDuration,
+		params.ResponseJSON,
+		params.Handler,
+		params.DontReadResponse,
+		params.ResponseSizeLimit,
+		params.Client,
+	)
 }
 
 func (cli *Client) cliOrContextLog(ctx context.Context) *zerolog.Logger {
@@ -531,7 +575,17 @@ func (cli *Client) cliOrContextLog(ctx context.Context) *zerolog.Logger {
 	return log
 }
 
-func (cli *Client) doRetry(req *http.Request, cause error, retries int, backoff time.Duration, responseJSON any, handler ClientResponseHandler, dontReadResponse bool, client *http.Client) ([]byte, *http.Response, error) {
+func (cli *Client) doRetry(
+	req *http.Request,
+	cause error,
+	retries int,
+	backoff time.Duration,
+	responseJSON any,
+	handler ClientResponseHandler,
+	dontReadResponse bool,
+	sizeLimit int64,
+	client *http.Client,
+) ([]byte, *http.Response, error) {
 	log := zerolog.Ctx(req.Context())
 	if req.Body != nil {
 		var err error
@@ -553,6 +607,8 @@ func (cli *Client) doRetry(req *http.Request, cause error, retries int, backoff 
 		}
 	}
 	log.Warn().Err(cause).
+		Str("method", req.Method).
+		Str("url", req.URL.String()).
 		Int("retry_in_seconds", int(backoff.Seconds())).
 		Msg("Request failed, retrying")
 	select {
@@ -563,11 +619,23 @@ func (cli *Client) doRetry(req *http.Request, cause error, retries int, backoff 
 	if cli.UpdateRequestOnRetry != nil {
 		req = cli.UpdateRequestOnRetry(req, cause)
 	}
-	return cli.executeCompiledRequest(req, retries-1, backoff*2, responseJSON, handler, dontReadResponse, client)
+	return cli.executeCompiledRequest(req, retries-1, backoff*2, responseJSON, handler, dontReadResponse, sizeLimit, client)
 }
 
-func readResponseBody(req *http.Request, res *http.Response) ([]byte, error) {
-	contents, err := io.ReadAll(res.Body)
+func readResponseBody(req *http.Request, res *http.Response, limit int64) ([]byte, error) {
+	if res.ContentLength > limit {
+		return nil, HTTPError{
+			Request:  req,
+			Response: res,
+
+			Message:      "not reading response",
+			WrappedError: fmt.Errorf("%w (%.2f MiB)", ErrResponseTooLong, float64(res.ContentLength)/1024/1024),
+		}
+	}
+	contents, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
+	if err == nil && len(contents) > int(limit) {
+		err = ErrBodyReadReachedLimit
+	}
 	if err != nil {
 		return nil, HTTPError{
 			Request:  req,
@@ -588,17 +656,20 @@ func closeTemp(log *zerolog.Logger, file *os.File) {
 	}
 }
 
-func streamResponse(req *http.Request, res *http.Response, responseJSON interface{}) ([]byte, error) {
+func streamResponse(req *http.Request, res *http.Response, responseJSON any, limit int64) ([]byte, error) {
 	log := zerolog.Ctx(req.Context())
 	file, err := os.CreateTemp("", "mautrix-response-")
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to create temporary file for streaming response")
-		_, err = handleNormalResponse(req, res, responseJSON)
+		_, err = handleNormalResponse(req, res, responseJSON, limit)
 		return nil, err
 	}
 	defer closeTemp(log, file)
-	if _, err = io.Copy(file, res.Body); err != nil {
+	var n int64
+	if n, err = io.Copy(file, io.LimitReader(res.Body, limit+1)); err != nil {
 		return nil, fmt.Errorf("failed to copy response to file: %w", err)
+	} else if n > limit {
+		return nil, ErrBodyReadReachedLimit
 	} else if _, err = file.Seek(0, 0); err != nil {
 		return nil, fmt.Errorf("failed to seek to beginning of response file: %w", err)
 	} else if err = json.NewDecoder(file).Decode(responseJSON); err != nil {
@@ -608,12 +679,12 @@ func streamResponse(req *http.Request, res *http.Response, responseJSON interfac
 	}
 }
 
-func noopHandleResponse(req *http.Request, res *http.Response, responseJSON interface{}) ([]byte, error) {
+func noopHandleResponse(req *http.Request, res *http.Response, responseJSON any, limit int64) ([]byte, error) {
 	return nil, nil
 }
 
-func handleNormalResponse(req *http.Request, res *http.Response, responseJSON interface{}) ([]byte, error) {
-	if contents, err := readResponseBody(req, res); err != nil {
+func handleNormalResponse(req *http.Request, res *http.Response, responseJSON any, limit int64) ([]byte, error) {
+	if contents, err := readResponseBody(req, res, limit); err != nil {
 		return nil, err
 	} else if responseJSON == nil {
 		return contents, nil
@@ -631,8 +702,13 @@ func handleNormalResponse(req *http.Request, res *http.Response, responseJSON in
 	}
 }
 
+const ErrorResponseSizeLimit = 512 * 1024
+
+var DefaultResponseSizeLimit int64 = 512 * 1024 * 1024
+
 func ParseErrorResponse(req *http.Request, res *http.Response) ([]byte, error) {
-	contents, err := readResponseBody(req, res)
+	defer res.Body.Close()
+	contents, err := readResponseBody(req, res, ErrorResponseSizeLimit)
 	if err != nil {
 		return contents, err
 	}
@@ -651,7 +727,16 @@ func ParseErrorResponse(req *http.Request, res *http.Response) ([]byte, error) {
 	}
 }
 
-func (cli *Client) executeCompiledRequest(req *http.Request, retries int, backoff time.Duration, responseJSON any, handler ClientResponseHandler, dontReadResponse bool, client *http.Client) ([]byte, *http.Response, error) {
+func (cli *Client) executeCompiledRequest(
+	req *http.Request,
+	retries int,
+	backoff time.Duration,
+	responseJSON any,
+	handler ClientResponseHandler,
+	dontReadResponse bool,
+	sizeLimit int64,
+	client *http.Client,
+) ([]byte, *http.Response, error) {
 	cli.RequestStart(req)
 	startTime := time.Now()
 	res, err := client.Do(req)
@@ -661,7 +746,9 @@ func (cli *Client) executeCompiledRequest(req *http.Request, retries int, backof
 	}
 	if err != nil {
 		if retries > 0 && !errors.Is(err, context.Canceled) {
-			return cli.doRetry(req, err, retries, backoff, responseJSON, handler, dontReadResponse, client)
+			return cli.doRetry(
+				req, err, retries, backoff, responseJSON, handler, dontReadResponse, sizeLimit, client,
+			)
 		}
 		err = HTTPError{
 			Request:  req,
@@ -676,7 +763,9 @@ func (cli *Client) executeCompiledRequest(req *http.Request, retries int, backof
 
 	if retries > 0 && retryafter.Should(res.StatusCode, !cli.IgnoreRateLimit) {
 		backoff = retryafter.Parse(res.Header.Get("Retry-After"), backoff)
-		return cli.doRetry(req, fmt.Errorf("HTTP %d", res.StatusCode), retries, backoff, responseJSON, handler, dontReadResponse, client)
+		return cli.doRetry(
+			req, fmt.Errorf("HTTP %d", res.StatusCode), retries, backoff, responseJSON, handler, dontReadResponse, sizeLimit, client,
+		)
 	}
 
 	var body []byte
@@ -684,7 +773,7 @@ func (cli *Client) executeCompiledRequest(req *http.Request, retries int, backof
 		body, err = ParseErrorResponse(req, res)
 		cli.LogRequestDone(req, res, nil, nil, len(body), duration)
 	} else {
-		body, err = handler(req, res, responseJSON)
+		body, err = handler(req, res, responseJSON, sizeLimit)
 		cli.LogRequestDone(req, res, nil, err, len(body), duration)
 	}
 	return body, res, err
@@ -744,7 +833,7 @@ func (req *ReqSync) BuildQuery() map[string]string {
 		query["full_state"] = "true"
 	}
 	if req.UseStateAfter {
-		query["org.matrix.msc4222.use_state_after"] = "true"
+		query["use_state_after"] = "true"
 	}
 	if req.BeeperStreaming {
 		query["com.beeper.streaming"] = "true"
@@ -1045,6 +1134,15 @@ func (cli *Client) GetProfile(ctx context.Context, mxid id.UserID) (resp *RespUs
 	return
 }
 
+func (cli *Client) SearchUserDirectory(ctx context.Context, query string, limit int) (resp *RespSearchUserDirectory, err error) {
+	urlPath := cli.BuildClientURL("v3", "user_directory", "search")
+	_, err = cli.MakeRequest(ctx, http.MethodPost, urlPath, &ReqSearchUserDirectory{
+		SearchTerm: query,
+		Limit:      limit,
+	}, &resp)
+	return
+}
+
 func (cli *Client) GetMutualRooms(ctx context.Context, otherUserID id.UserID, extras ...ReqMutualRooms) (resp *RespMutualRooms, err error) {
 	if cli.SpecVersions != nil && !cli.SpecVersions.Supports(FeatureMutualRooms) {
 		err = fmt.Errorf("server does not support fetching mutual rooms")
@@ -1078,8 +1176,7 @@ func (cli *Client) GetRoomSummary(ctx context.Context, roomIDOrAlias string, via
 
 // GetDisplayName returns the display name of the user with the specified MXID. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3profileuseriddisplayname
 func (cli *Client) GetDisplayName(ctx context.Context, mxid id.UserID) (resp *RespUserDisplayName, err error) {
-	urlPath := cli.BuildClientURL("v3", "profile", mxid, "displayname")
-	_, err = cli.MakeRequest(ctx, http.MethodGet, urlPath, nil, &resp)
+	err = cli.GetProfileField(ctx, mxid, "displayname", &resp)
 	return
 }
 
@@ -1090,41 +1187,47 @@ func (cli *Client) GetOwnDisplayName(ctx context.Context) (resp *RespUserDisplay
 
 // SetDisplayName sets the user's profile display name. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3profileuseriddisplayname
 func (cli *Client) SetDisplayName(ctx context.Context, displayName string) (err error) {
-	urlPath := cli.BuildClientURL("v3", "profile", cli.UserID, "displayname")
-	s := struct {
-		DisplayName string `json:"displayname"`
-	}{displayName}
-	_, err = cli.MakeRequest(ctx, http.MethodPut, urlPath, &s, nil)
-	return
+	return cli.SetProfileField(ctx, "displayname", displayName)
 }
 
-// UnstableSetProfileField sets an arbitrary MSC4133 profile field. See https://github.com/matrix-org/matrix-spec-proposals/pull/4133
-func (cli *Client) UnstableSetProfileField(ctx context.Context, key string, value any) (err error) {
-	urlPath := cli.BuildClientURL("unstable", "uk.tcpip.msc4133", "profile", cli.UserID, key)
+// SetProfileField sets an arbitrary profile field. See https://spec.matrix.org/v1.16/client-server-api/#put_matrixclientv3profileuseridkeyname
+func (cli *Client) SetProfileField(ctx context.Context, key string, value any) (err error) {
+	urlPath := cli.BuildClientURL("v3", "profile", cli.UserID, key)
+	if key != "displayname" && key != "avatar_url" && !cli.SpecVersions.Supports(FeatureArbitraryProfileFields) && cli.SpecVersions.Supports(FeatureUnstableProfileFields) {
+		urlPath = cli.BuildClientURL("unstable", "uk.tcpip.msc4133", "profile", cli.UserID, key)
+	}
 	_, err = cli.MakeRequest(ctx, http.MethodPut, urlPath, map[string]any{
 		key: value,
 	}, nil)
 	return
 }
 
-// UnstableDeleteProfileField deletes an arbitrary MSC4133 profile field. See https://github.com/matrix-org/matrix-spec-proposals/pull/4133
-func (cli *Client) UnstableDeleteProfileField(ctx context.Context, key string) (err error) {
-	urlPath := cli.BuildClientURL("unstable", "uk.tcpip.msc4133", "profile", cli.UserID, key)
+// DeleteProfileField deletes an arbitrary profile field. See https://spec.matrix.org/v1.16/client-server-api/#put_matrixclientv3profileuseridkeyname
+func (cli *Client) DeleteProfileField(ctx context.Context, key string) (err error) {
+	urlPath := cli.BuildClientURL("v3", "profile", cli.UserID, key)
+	if key != "displayname" && key != "avatar_url" && !cli.SpecVersions.Supports(FeatureArbitraryProfileFields) && cli.SpecVersions.Supports(FeatureUnstableProfileFields) {
+		urlPath = cli.BuildClientURL("unstable", "uk.tcpip.msc4133", "profile", cli.UserID, key)
+	}
 	_, err = cli.MakeRequest(ctx, http.MethodDelete, urlPath, nil, nil)
+	return
+}
+
+// GetProfileField gets an arbitrary profile field and parses the response into the given struct. See https://spec.matrix.org/unstable/client-server-api/#get_matrixclientv3profileuseridkeyname
+func (cli *Client) GetProfileField(ctx context.Context, userID id.UserID, key string, into any) (err error) {
+	urlPath := cli.BuildClientURL("v3", "profile", userID, key)
+	if key != "displayname" && key != "avatar_url" && !cli.SpecVersions.Supports(FeatureArbitraryProfileFields) && cli.SpecVersions.Supports(FeatureUnstableProfileFields) {
+		urlPath = cli.BuildClientURL("unstable", "uk.tcpip.msc4133", "profile", cli.UserID, key)
+	}
+	_, err = cli.MakeRequest(ctx, http.MethodGet, urlPath, nil, into)
 	return
 }
 
 // GetAvatarURL gets the avatar URL of the user with the specified MXID. See https://spec.matrix.org/v1.2/client-server-api/#get_matrixclientv3profileuseridavatar_url
 func (cli *Client) GetAvatarURL(ctx context.Context, mxid id.UserID) (url id.ContentURI, err error) {
-	urlPath := cli.BuildClientURL("v3", "profile", mxid, "avatar_url")
 	s := struct {
 		AvatarURL id.ContentURI `json:"avatar_url"`
 	}{}
-
-	_, err = cli.MakeRequest(ctx, http.MethodGet, urlPath, nil, &s)
-	if err != nil {
-		return
-	}
+	err = cli.GetProfileField(ctx, mxid, "avatar_url", &s)
 	url = s.AvatarURL
 	return
 }
@@ -1239,9 +1342,9 @@ func (cli *Client) SendMessageEvent(ctx context.Context, roomID id.RoomID, event
 	return
 }
 
-// SendStateEvent sends a state event into a room. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3roomsroomidstateeventtypestatekey
+// SendStateEvent sends a state event into a room. See https://spec.matrix.org/v1.16/client-server-api/#put_matrixclientv3roomsroomidstateeventtypestatekey
 // contentJSON should be a pointer to something that can be encoded as JSON using json.Marshal.
-func (cli *Client) SendStateEvent(ctx context.Context, roomID id.RoomID, eventType event.Type, stateKey string, contentJSON interface{}, extra ...ReqSendEvent) (resp *RespSendEvent, err error) {
+func (cli *Client) SendStateEvent(ctx context.Context, roomID id.RoomID, eventType event.Type, stateKey string, contentJSON any, extra ...ReqSendEvent) (resp *RespSendEvent, err error) {
 	var req ReqSendEvent
 	if len(extra) > 0 {
 		req = extra[0]
@@ -1251,8 +1354,14 @@ func (cli *Client) SendStateEvent(ctx context.Context, roomID id.RoomID, eventTy
 	if req.MeowEventID != "" {
 		queryParams["fi.mau.event_id"] = req.MeowEventID.String()
 	}
+	if req.TransactionID != "" {
+		queryParams["fi.mau.transaction_id"] = req.TransactionID
+	}
 	if req.UnstableDelay > 0 {
 		queryParams["org.matrix.msc4140.delay"] = strconv.FormatInt(req.UnstableDelay.Milliseconds(), 10)
+	}
+	if req.Timestamp > 0 {
+		queryParams["ts"] = strconv.FormatInt(req.Timestamp, 10)
 	}
 
 	urlData := ClientURLPath{"v3", "rooms", roomID, "state", eventType.String(), stateKey}
@@ -1266,14 +1375,38 @@ func (cli *Client) SendStateEvent(ctx context.Context, roomID id.RoomID, eventTy
 
 // SendMassagedStateEvent sends a state event into a room with a custom timestamp. See https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3roomsroomidstateeventtypestatekey
 // contentJSON should be a pointer to something that can be encoded as JSON using json.Marshal.
+//
+// Deprecated: SendStateEvent accepts a timestamp via ReqSendEvent and should be used instead.
 func (cli *Client) SendMassagedStateEvent(ctx context.Context, roomID id.RoomID, eventType event.Type, stateKey string, contentJSON interface{}, ts int64) (resp *RespSendEvent, err error) {
-	urlPath := cli.BuildURLWithQuery(ClientURLPath{"v3", "rooms", roomID, "state", eventType.String(), stateKey}, map[string]string{
-		"ts": strconv.FormatInt(ts, 10),
+	resp, err = cli.SendStateEvent(ctx, roomID, eventType, stateKey, contentJSON, ReqSendEvent{
+		Timestamp: ts,
 	})
-	_, err = cli.MakeRequest(ctx, http.MethodPut, urlPath, contentJSON, &resp)
-	if err == nil && cli.StateStore != nil {
-		cli.updateStoreWithOutgoingEvent(ctx, roomID, eventType, stateKey, contentJSON)
+	return
+}
+
+func (cli *Client) DelayedEvents(ctx context.Context, req *ReqDelayedEvents) (resp *RespDelayedEvents, err error) {
+	query := map[string]string{}
+	if req.DelayID != "" {
+		query["delay_id"] = string(req.DelayID)
 	}
+	if req.Status != "" {
+		query["status"] = string(req.Status)
+	}
+	if req.NextBatch != "" {
+		query["next_batch"] = req.NextBatch
+	}
+
+	urlPath := cli.BuildURLWithQuery(ClientURLPath{"unstable", "org.matrix.msc4140", "delayed_events"}, query)
+	_, err = cli.MakeRequest(ctx, http.MethodGet, urlPath, req, &resp)
+
+	// Migration: merge old keys with new ones
+	if resp != nil {
+		resp.Scheduled = append(resp.Scheduled, resp.DelayedEvents...)
+		resp.DelayedEvents = nil
+		resp.Finalised = append(resp.Finalised, resp.FinalisedEvents...)
+		resp.FinalisedEvents = nil
+	}
+
 	return
 }
 
@@ -1364,6 +1497,10 @@ func (cli *Client) CreateRoom(ctx context.Context, req *ReqCreateRoom) (resp *Re
 				Msg("Failed to update creator membership in state store after creating room")
 		}
 		for _, evt := range req.InitialState {
+			evt.RoomID = resp.RoomID
+			if evt.StateKey == nil {
+				evt.StateKey = ptr.Ptr("")
+			}
 			UpdateStateStore(ctx, cli.StateStore, evt)
 		}
 		inviteMembership := event.MembershipInvite
@@ -1377,9 +1514,6 @@ func (cli *Client) CreateRoom(ctx context.Context, req *ReqCreateRoom) (resp *Re
 					Stringer("invitee_user_id", invitee).
 					Msg("Failed to update membership in state store after creating room")
 			}
-		}
-		for _, evt := range req.InitialState {
-			cli.updateStoreWithOutgoingEvent(ctx, resp.RoomID, evt.Type, evt.GetStateKey(), &evt.Content)
 		}
 	}
 	return
@@ -1551,22 +1685,34 @@ func (cli *Client) FullStateEvent(ctx context.Context, roomID id.RoomID, eventTy
 		"format": "event",
 	})
 	_, err = cli.MakeRequest(ctx, http.MethodGet, u, nil, &evt)
-	if err == nil && cli.StateStore != nil {
-		UpdateStateStore(ctx, cli.StateStore, evt)
-	}
 	if evt != nil {
 		evt.Type.Class = event.StateEventType
 		_ = evt.Content.ParseRaw(evt.Type)
+		if evt.RoomID == "" {
+			evt.RoomID = roomID
+		}
+	}
+	if err == nil && cli.StateStore != nil {
+		UpdateStateStore(ctx, cli.StateStore, evt)
 	}
 	return
 }
 
 // parseRoomStateArray parses a JSON array as a stream and stores the events inside it in a room state map.
-func parseRoomStateArray(_ *http.Request, res *http.Response, responseJSON interface{}) ([]byte, error) {
+func parseRoomStateArray(req *http.Request, res *http.Response, responseJSON any, limit int64) ([]byte, error) {
+	if res.ContentLength > limit {
+		return nil, HTTPError{
+			Request:  req,
+			Response: res,
+
+			Message:      "not reading response",
+			WrappedError: fmt.Errorf("%w (%.2f MiB)", ErrResponseTooLong, float64(res.ContentLength)/1024/1024),
+		}
+	}
 	response := make(RoomStateMap)
 	responsePtr := responseJSON.(*map[event.Type]map[string]*event.Event)
 	*responsePtr = response
-	dec := json.NewDecoder(res.Body)
+	dec := json.NewDecoder(io.LimitReader(res.Body, limit))
 
 	arrayStart, err := dec.Token()
 	if err != nil {
@@ -1609,12 +1755,21 @@ func (cli *Client) State(ctx context.Context, roomID id.RoomID) (stateMap RoomSt
 		ResponseJSON: &stateMap,
 		Handler:      parseRoomStateArray,
 	})
+	if stateMap != nil {
+		pls, ok := stateMap[event.StatePowerLevels][""]
+		if ok {
+			pls.Content.AsPowerLevels().CreateEvent = stateMap[event.StateCreate][""]
+		}
+	}
 	if err == nil && cli.StateStore != nil {
 		for evtType, evts := range stateMap {
 			if evtType == event.StateMember {
 				continue
 			}
 			for _, evt := range evts {
+				if evt.RoomID == "" {
+					evt.RoomID = roomID
+				}
 				UpdateStateStore(ctx, cli.StateStore, evt)
 			}
 		}
@@ -1681,6 +1836,38 @@ func (cli *Client) Download(ctx context.Context, mxcURL id.ContentURI) (*http.Re
 	return resp, err
 }
 
+type DownloadThumbnailExtra struct {
+	Method   string
+	Animated bool
+}
+
+func (cli *Client) DownloadThumbnail(ctx context.Context, mxcURL id.ContentURI, height, width int, extras ...DownloadThumbnailExtra) (*http.Response, error) {
+	if len(extras) > 1 {
+		panic(fmt.Errorf("invalid number of arguments to DownloadThumbnail: %d", len(extras)))
+	}
+	var extra DownloadThumbnailExtra
+	if len(extras) == 1 {
+		extra = extras[0]
+	}
+	path := ClientURLPath{"v1", "media", "thumbnail", mxcURL.Homeserver, mxcURL.FileID}
+	query := map[string]string{
+		"height": strconv.Itoa(height),
+		"width":  strconv.Itoa(width),
+	}
+	if extra.Method != "" {
+		query["method"] = extra.Method
+	}
+	if extra.Animated {
+		query["animated"] = "true"
+	}
+	_, resp, err := cli.MakeFullRequestWithResp(ctx, FullRequest{
+		Method:           http.MethodGet,
+		URL:              cli.BuildURLWithQuery(path, query),
+		DontReadResponse: true,
+	})
+	return resp, err
+}
+
 func (cli *Client) DownloadBytes(ctx context.Context, mxcURL id.ContentURI) ([]byte, error) {
 	resp, err := cli.Download(ctx, mxcURL)
 	if err != nil {
@@ -1730,7 +1917,7 @@ func (cli *Client) UploadAsync(ctx context.Context, req ReqUploadMedia) (*RespCr
 	go func() {
 		_, err = cli.UploadMedia(ctx, req)
 		if err != nil {
-			cli.Log.Error().Str("mxc", req.MXC.String()).Err(err).Msg("Async upload of media failed")
+			cli.Log.Error().Stringer("mxc", req.MXC).Err(err).Msg("Async upload of media failed")
 		}
 	}()
 	return resp, nil
@@ -1785,7 +1972,9 @@ func (cli *Client) tryUploadMediaToURL(ctx context.Context, url, contentType str
 	}
 	req.ContentLength = contentLength
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("User-Agent", cli.UserAgent+" (external media uploader)")
+	if cli.UserAgent != "" {
+		req.Header.Set("User-Agent", cli.UserAgent+" (external media uploader)")
+	}
 
 	if cli.ExternalClient != nil {
 		return cli.ExternalClient.Do(req)
@@ -2414,7 +2603,7 @@ func (cli *Client) DeleteDevice(ctx context.Context, deviceID id.DeviceID, req *
 
 func (cli *Client) DeleteDevices(ctx context.Context, req *ReqDeleteDevices) error {
 	urlPath := cli.BuildClientURL("v3", "delete_devices")
-	_, err := cli.MakeRequest(ctx, http.MethodDelete, urlPath, req, nil)
+	_, err := cli.MakeRequest(ctx, http.MethodPost, urlPath, req, nil)
 	return err
 }
 
@@ -2505,24 +2694,40 @@ func (cli *Client) ReportRoom(ctx context.Context, roomID id.RoomID, reason stri
 	return err
 }
 
-// BatchSend sends a batch of historical events into a room. This is only available for appservices.
+// AdminWhoIs fetches session information belonging to a specific user. Typically requires being a server admin.
 //
-// Deprecated: MSC2716 has been abandoned, so this is now Beeper-specific. BeeperBatchSend should be used instead.
-func (cli *Client) BatchSend(ctx context.Context, roomID id.RoomID, req *ReqBatchSend) (resp *RespBatchSend, err error) {
-	path := ClientURLPath{"unstable", "org.matrix.msc2716", "rooms", roomID, "batch_send"}
-	query := map[string]string{
-		"prev_event_id": req.PrevEventID.String(),
-	}
-	if req.BeeperNewMessages {
-		query["com.beeper.new_messages"] = "true"
-	}
-	if req.BeeperMarkReadBy != "" {
-		query["com.beeper.mark_read_by"] = req.BeeperMarkReadBy.String()
-	}
-	if len(req.BatchID) > 0 {
-		query["batch_id"] = req.BatchID.String()
-	}
-	_, err = cli.MakeRequest(ctx, http.MethodPost, cli.BuildURLWithQuery(path, query), req, &resp)
+// https://spec.matrix.org/v1.15/client-server-api/#get_matrixclientv3adminwhoisuserid
+func (cli *Client) AdminWhoIs(ctx context.Context, userID id.UserID) (resp RespWhoIs, err error) {
+	urlPath := cli.BuildClientURL("v3", "admin", "whois", userID)
+	_, err = cli.MakeRequest(ctx, http.MethodGet, urlPath, nil, &resp)
+	return
+}
+
+// UnstableGetSuspendedStatus uses MSC4323 to check if a user is suspended.
+func (cli *Client) UnstableGetSuspendedStatus(ctx context.Context, userID id.UserID) (res *RespSuspended, err error) {
+	urlPath := cli.BuildClientURL("unstable", "uk.timedout.msc4323", "admin", "suspend", userID)
+	_, err = cli.MakeRequest(ctx, http.MethodGet, urlPath, nil, res)
+	return
+}
+
+// UnstableGetLockStatus uses MSC4323 to check if a user is locked.
+func (cli *Client) UnstableGetLockStatus(ctx context.Context, userID id.UserID) (res *RespLocked, err error) {
+	urlPath := cli.BuildClientURL("unstable", "uk.timedout.msc4323", "admin", "lock", userID)
+	_, err = cli.MakeRequest(ctx, http.MethodGet, urlPath, nil, res)
+	return
+}
+
+// UnstableSetSuspendedStatus uses MSC4323 to set whether a user account is suspended.
+func (cli *Client) UnstableSetSuspendedStatus(ctx context.Context, userID id.UserID, suspended bool) (res *RespSuspended, err error) {
+	urlPath := cli.BuildClientURL("unstable", "uk.timedout.msc4323", "admin", "suspend", userID)
+	_, err = cli.MakeRequest(ctx, http.MethodPut, urlPath, &ReqSuspend{Suspended: suspended}, res)
+	return
+}
+
+// UnstableSetLockStatus uses MSC4323 to set whether a user account is locked.
+func (cli *Client) UnstableSetLockStatus(ctx context.Context, userID id.UserID, locked bool) (res *RespLocked, err error) {
+	urlPath := cli.BuildClientURL("unstable", "uk.timedout.msc4323", "admin", "lock", userID)
+	_, err = cli.MakeRequest(ctx, http.MethodPut, urlPath, &ReqLocked{Locked: locked}, res)
 	return
 }
 
