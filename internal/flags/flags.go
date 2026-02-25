@@ -19,7 +19,7 @@ type Config struct {
 	// Login is matrix user login
 	Login *string
 	// Password is matrix user password
-	Password *string
+	Password *string //nolint:gosec // intended
 	// Rooms ids or aliases (raw)
 	Rooms *StringSliceFlag
 	// Room ID
