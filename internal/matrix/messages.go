@@ -63,10 +63,7 @@ func (m *Message) Vars() map[string]string {
 	}
 }
 
-// Messages of the room
-// Note on limit - the output slice may be less size than limit you sent in the following cases:
-// * room contains less messages than limit
-// * some room messages don't contain body/formatted body
+// Messages of the room; result may be smaller than limit if fewer exist or some lack body/formatted body
 func Messages(roomID id.RoomID, limit int, since time.Time) (map[id.EventID]*Message, error) {
 	var err error
 	var sinceMS int64

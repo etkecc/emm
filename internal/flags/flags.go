@@ -30,7 +30,7 @@ type Config struct {
 	StartAt time.Time
 	// Ignore messages by following MXIDs
 	Ignore *string
-	// Append enforces appending to the output file, useful when you are using multi output mode, but want to have multiple messages in a single file
+	// Append enables appending to the output file, for multi-output mode with several messages in one file
 	Append *bool
 	// Limit of messages
 	Limit *int
